@@ -36,6 +36,8 @@ final class BluetoothSyncService: NSObject {
     // MARK: - 状态
 
     private(set) var isRunning = false
+    private var isConnecting = false
+    private var lastWriteTime: TimeInterval = 0
 
     private var rfcommChannel: IOBluetoothRFCOMMChannel?
     private var device: IOBluetoothDevice?
@@ -177,18 +179,28 @@ final class BluetoothSyncService: NSObject {
 
     private func attemptConnect() {
         guard isRunning else { return }
-        // 已有可用通道则只补发缓存帧
+
+        // 若已连接：检测空闲心跳，若超过 15 秒未写入则发送轻量 ping 保活
         if let channel = rfcommChannel, channel.isOpen() {
-            if let line = lastPayloadLine {
-                write(line: line, to: channel)
+            let now = Date().timeIntervalSince1970
+            if now - lastWriteTime >= 15 {
+                sendHeartbeat(to: channel)
             }
             return
         }
 
-        teardownConnection()
+        // 若已有连接正在建立中，避免 10s 定时器并发重入与通道冲突
+        guard !isConnecting else {
+            Logger.bluetooth.debug("已有连接流程正在进行中，跳过本次重连调度")
+            return
+        }
+
+        isConnecting = true
+        teardownConnection(resetConnecting: false)
 
         guard let device = findPairedDisplayDevice() else {
             Logger.bluetooth.debug("未发现已配对的 AgentRing 副屏设备")
+            isConnecting = false
             return
         }
         self.device = device
@@ -202,13 +214,31 @@ final class BluetoothSyncService: NSObject {
         querySDP(for: device) { [weak self] channelID in
             guard let self else { return }
             self.cancelConnectTimeout()
-            guard self.isRunning else { return }
+            guard self.isRunning else {
+                self.isConnecting = false
+                return
+            }
 
             let resolved = channelID ?? Self.fallbackChannelID
             if channelID == nil {
                 Logger.bluetooth.notice("SDP 未查询到 SPP 通道，回退预备通道 \(Self.fallbackChannelID)")
             }
             self.openChannel(on: device, channelID: resolved)
+        }
+    }
+
+    /// 发送轻量心跳保活帧，防止底层蓝牙芯片因静默休眠或超时断开
+    private func sendHeartbeat(to channel: IOBluetoothRFCOMMChannel) {
+        let timestamp = Int(Date().timeIntervalSince1970)
+        let pingJson = "{\"type\":\"ping\",\"timestamp\":\(timestamp)}"
+        let data = Data((pingJson + "\n").utf8)
+        let status = writeRaw(data, to: channel)
+        if status == kIOReturnSuccess {
+            lastWriteTime = Date().timeIntervalSince1970
+            Logger.bluetooth.debug("已发送蓝牙保活心跳 (ping)")
+        } else {
+            Logger.bluetooth.info("发送心跳失败: \(status, privacy: .public)，释放连接")
+            teardownConnection()
         }
     }
 
@@ -270,6 +300,7 @@ final class BluetoothSyncService: NSObject {
         // delegate 直接传入，确保断开回调从一开始就挂上
         let result = device.openRFCOMMChannelSync(&channel, withChannelID: channelID, delegate: self)
         if result == kIOReturnSuccess, let channel {
+            isConnecting = false
             cancelConnectTimeout()
             rfcommChannel = channel
             Logger.bluetooth.notice("副屏 RFCOMM 通道已建立 (channel \(channelID))")
@@ -283,16 +314,12 @@ final class BluetoothSyncService: NSObject {
             return
         }
 
-        Logger.bluetooth.info("同步打开 RFCOMM 通道返回: \(result, privacy: .public)，尝试异步打开通道 \(channelID)...")
-        beginConnectTimeout()
-        let asyncStatus = device.openRFCOMMChannelAsync(&channel, withChannelID: channelID, delegate: self)
-        if asyncStatus != kIOReturnSuccess {
-            Logger.bluetooth.info("异步发起 RFCOMM 通道失败: \(asyncStatus, privacy: .public)")
-            teardownConnection()
-        }
+        Logger.bluetooth.info("打开 RFCOMM 通道返回: \(result, privacy: .public)")
+        isConnecting = false
+        teardownConnection()
     }
 
-    private func teardownConnection() {
+    private func teardownConnection(resetConnecting: Bool = true) {
         if let channel = rfcommChannel {
             if channel.isOpen() {
                 channel.close()
@@ -304,6 +331,9 @@ final class BluetoothSyncService: NSObject {
         queryingAddress = nil
         sdpQueryCompletion = nil
         cancelConnectTimeout()
+        if resetConnecting {
+            isConnecting = false
+        }
     }
 
     // MARK: - 超时看门狗
@@ -337,6 +367,8 @@ final class BluetoothSyncService: NSObject {
 
     private func write(line: String, to channel: IOBluetoothRFCOMMChannel) {
         let data = Data((line + "\n").utf8)
+        guard !data.isEmpty else { return }
+
         let mtu = Int(channel.getMTU())
         if mtu > 0 && data.count > mtu {
             // RFCOMM 单次写入不得超过 MTU；报文按 MTU 分段
@@ -353,13 +385,18 @@ final class BluetoothSyncService: NSObject {
                 }
                 offset = end
                 segments += 1
+                if offset < data.count {
+                    usleep(15_000) // 15ms 让出底层 RFCOMM credit
+                }
             }
+            lastWriteTime = Date().timeIntervalSince1970
             Logger.bluetooth.debug("蓝牙写入 \(data.count) 字节（分 \(segments) 段）")
             return
         }
 
         let status = writeRaw(data, to: channel)
         if status == kIOReturnSuccess {
+            lastWriteTime = Date().timeIntervalSince1970
             Logger.bluetooth.debug("蓝牙写入 \(data.count) 字节")
         } else {
             Logger.bluetooth.error("蓝牙写入失败: \(status, privacy: .public)")
@@ -404,6 +441,7 @@ extension BluetoothSyncService: IOBluetoothRFCOMMChannelDelegate {
         queue.async { [weak self] in
             guard let self else { return }
             self.cancelConnectTimeout()
+            self.isConnecting = false
             guard status == kIOReturnSuccess, let channel else {
                 Logger.bluetooth.info("异步打开 RFCOMM 通道失败: \(status, privacy: .public)")
                 self.teardownConnection()
