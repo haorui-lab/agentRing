@@ -8,17 +8,18 @@
 
 ```
 ┌───────────────────────────────────────┐            蓝牙 RFCOMM (SPP)            ┌────────────────────────────────────────┐
-│             macOS 客户端              │────────────────────────────────────────>│             Android 副屏               │
-│          (AgentRing.app)              │   JSON Stream (每帧以 '\n' 结尾)        │         (agentRing-Android)            │
-│                                       │                                         │                                        │
-│ • 主动连接已配对的副屏设备             │                                         │ • 监听 SPP 服务 (AgentRingDisplay)     │
-│ • 监听配置与用量变化                   │                                         │ • 启动 BLE 广播加速设备发现            │
-│ • 周期性/事件触发广播最新用量数据      │                                         │ • 屏幕常亮 + 沉浸横屏无交互展示        │
+│             macOS 客户端              │──────┬─────────────────────────────────>│            Android 副屏 #1             │
+│          (AgentRing.app)              │      │  JSON Stream (每帧以 '\n' 结尾)   │         (agentRing-Android)            │
+│                                       │      │                                  └────────────────────────────────────────┘
+│ • 连接池管理所有已配对副屏 (1:N 拓扑) │      │
+│ • 监听配置与用量变化                   │      │                                  ┌────────────────────────────────────────┐
+│ • 周期性/事件触发广播最新用量数据      │      └─────────────────────────────────>│            Android 副屏 #2...           │
+│ • 各副屏会话隔离，独立保活与重连       │         JSON Stream (每帧以 '\n' 结尾)   │         (agentRing-Android)            │
 └───────────────────────────────────────┘                                         └────────────────────────────────────────┘
 ```
 
-- **数据发送端（Master / Client）**：macOS `AgentRing.app`，负责抓取并计算各 AI 供应商（Codex、Cursor、Antigravity 等）的额度、重置时间和显示状态，主动连接副屏并推送数据。
-- **数据接收端（Slave / Server）**：Android 手机（例如 Nubia Z9 mini，Android 5.0+），程序启动后开启屏幕常亮并强制横屏，充当硬件级桌面信息副屏。
+- **数据发送端（Master / Client）**：macOS `AgentRing.app`，负责抓取并计算各 AI 供应商（Codex、Cursor、Antigravity 等）的额度、重置时间和显示状态，建立并维护与多个已配对副屏的 RFCOMM 通道池，广播推送数据。
+- **数据接收端（Slave / Server）**：Android 手机（例如 Nubia Z9 mini，Android 5.0+），程序启动后开启屏幕常亮并强制横屏，充当硬件级桌面信息副屏。支持多台设备独立运行、同时接收展示。
 
 ---
 
@@ -38,9 +39,12 @@
    - Android 副屏通过反射调用 `BluetoothAdapter.setScanMode(23, 0)`，将蓝牙设为 `SCAN_MODE_CONNECTABLE_DISCOVERABLE` 且常驻可见。
 3. **BLE 辅助广播 (Bluetooth Low Energy Advertising)**：
    - Android 端在 Lollipop (API 21+) 及以上启动低延迟、可连接的 BLE 广播（`AdvertiseSettings.ADVERTISE_MODE_LOW_LATENCY`），携带设备完整本地名称。此举使 Mac 系统的蓝牙搜索面板能在 1~2 秒内迅速发现该设备。
-4. **macOS 端自动重连与看门狗机制**：
-   - macOS 端遍历系统已配对设备（`IOBluetoothDevice.pairedDevices()`），按名称前缀 `AgentRing` 或已知设备 MAC 地址（如 `D8:55:A3:41:24:86`）进行识别。
-   - 设有 10 秒周期性重连定时器；若 RFCOMM 串口断开或连接超时（8 秒阈值），自动安全释放并进入重试。
+4. **macOS 端 1:N 多设备连接池与看门狗机制**：
+   - macOS 端遍历系统已配对设备（`IOBluetoothDevice.pairedDevices()`），按名称前缀 `AgentRing` 或已知设备 MAC 地址（如 `D8:55:A3:41:24:86`）筛选所有匹配的副屏设备。
+   - 内部为每台副屏维护独立的 `DisplaySession` 连接上下文，互不影响；
+   - 设有 10 秒周期性重连定时器：遍历所有设备，对未连接的设备发起 SDP 查询与通道连接；
+   - 每个会话配备独立的 8 秒连接看门狗；若单台设备离线或连接超时，仅释放该设备会话，不阻塞其他正常副屏的数据推送与保活；
+   - 当用量数据发生变化或新设备上线时，向所有处于活跃连接状态的副屏通道并发广播最新的 JSON 数据报文。
 
 ---
 
