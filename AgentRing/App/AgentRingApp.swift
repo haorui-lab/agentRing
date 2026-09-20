@@ -59,9 +59,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         menuBarManager = MenuBarManager()
         AppUpdateManager.shared.start()
 
-        // 蓝牙副屏：跟随设置开关启动（连接周期性重连由服务内部管理）
+        // 蓝牙副屏：跟随设置开关启动（经典蓝牙 SPP + BLE GATT 双栈）
         if settings.bluetoothSyncEnabled {
             BluetoothSyncService.shared.start()
+            BLESyncService.shared.start()
         }
 
         if settings.isFirstLaunch || !settings.hasAnyValidCredentials {
@@ -140,6 +141,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     /// 注意：Combine 订阅会在 cancellables 被释放时自动清理
     func applicationWillTerminate(_ notification: Notification) {
         BluetoothSyncService.shared.stop()
+        BLESyncService.shared.stop()
         menuBarManager?.cleanup()
         welcomeWindow?.close()
         welcomeWindow = nil

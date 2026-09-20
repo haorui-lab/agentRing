@@ -476,6 +476,11 @@ final class UserSettings: ObservableObject {
                 cursorUsageData: cursor,
                 antigravityUsageData: antigravity
             )
+            BLESyncService.shared.pushPayload(
+                codexUsageData: codex,
+                cursorUsageData: cursor,
+                antigravityUsageData: antigravity
+            )
         }
     }
 

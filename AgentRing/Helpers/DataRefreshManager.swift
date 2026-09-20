@@ -241,6 +241,11 @@ final class DataRefreshManager: ObservableObject {
                 cursorUsageData: cursor,
                 antigravityUsageData: antigravity
             )
+            BLESyncService.shared.pushPayload(
+                codexUsageData: codex,
+                cursorUsageData: cursor,
+                antigravityUsageData: antigravity
+            )
         }
     }
 
