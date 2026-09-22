@@ -450,17 +450,27 @@ final class UserSettings: ObservableObject {
         didSet { defaults.set(notificationsEnabled, forKey: "notificationsEnabled") }
     }
 
-    /// 蓝牙副屏同步开关（默认关闭；开启后向已配对的 agentRing-Android 副屏推送用量）
+    /// 蓝牙副屏同步开关（默认关闭；开启后向已配对的副屏推送用量）
     @Published var bluetoothSyncEnabled: Bool {
         didSet {
             defaults.set(bluetoothSyncEnabled, forKey: "bluetoothSyncEnabled")
             if bluetoothSyncEnabled {
                 BluetoothSyncService.shared.start()
+                BLESyncService.shared.start()
                 // 开启即推：不等下一次轮询，把当前已有数据立即发一帧
                 postBluetoothImmediatePush()
             } else {
                 BluetoothSyncService.shared.stop()
+                BLESyncService.shared.stop()
             }
+        }
+    }
+
+    /// BLE 目标副屏设备名称（空为自动选择最近设备）
+    @Published var targetBLEDeviceName: String {
+        didSet {
+            defaults.set(targetBLEDeviceName, forKey: "targetBLEDeviceName")
+            BLESyncService.shared.setTargetDeviceName(targetBLEDeviceName)
         }
     }
 
@@ -685,6 +695,7 @@ final class UserSettings: ObservableObject {
 
         notificationsEnabled = defaults.object(forKey: "notificationsEnabled") as? Bool ?? true
         bluetoothSyncEnabled = defaults.bool(forKey: "bluetoothSyncEnabled")
+        targetBLEDeviceName = defaults.string(forKey: "targetBLEDeviceName") ?? ""
         autoUpdateEnabled = defaults.object(forKey: "SUEnableAutomaticChecks") as? Bool
             ?? defaults.object(forKey: "autoUpdateEnabled") as? Bool ?? true
         launchAtLogin = defaults.bool(forKey: "launchAtLogin")
@@ -755,6 +766,7 @@ final class UserSettings: ObservableObject {
         customDisplayMenuBarOnly = false
         notificationsEnabled = true
         bluetoothSyncEnabled = false
+        targetBLEDeviceName = ""
         autoUpdateEnabled = true
         resetSmartMonitoringState()
     }

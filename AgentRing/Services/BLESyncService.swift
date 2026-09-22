@@ -14,8 +14,23 @@ import Foundation
 import CoreBluetooth
 import OSLog
 import AppKit
+import Combine
 
-final class BLESyncService: NSObject {
+public struct BLEDiscoveredDevice: Identifiable, Equatable {
+    public let id: UUID
+    public let name: String
+    public let rssi: Int
+    public var isConnected: Bool
+
+    public init(id: UUID, name: String, rssi: Int, isConnected: Bool) {
+        self.id = id
+        self.name = name
+        self.rssi = rssi
+        self.isConnected = isConnected
+    }
+}
+
+final class BLESyncService: NSObject, ObservableObject {
     static let shared = BLESyncService()
 
     // MARK: - 协议常量与 UUID
@@ -29,6 +44,15 @@ final class BLESyncService: NSObject {
     static let rxCharUUID  = CBUUID(string: "6E400002-B5A3-F393-E0A9-E50E24DCCA9E")
     /// RX / Notify Characteristic (ESP32 -> Client)
     static let txCharUUID  = CBUUID(string: "6E400003-B5A3-F393-E0A9-E50E24DCCA9E")
+
+    // MARK: - 观察状态
+
+    @Published public private(set) var discoveredDevices: [BLEDiscoveredDevice] = []
+    @Published public private(set) var connectedDeviceName: String? = nil
+    @Published public private(set) var isScanning = false
+
+    /// 目标设备名称过滤（若为空或 "auto"，则连接任意带 AgentRing 前缀的外设）
+    private var targetDeviceName: String = ""
 
     // MARK: - 会话模型
 
@@ -70,12 +94,45 @@ final class BLESyncService: NSObject {
 
     // MARK: - 控制接口
 
+    func setTargetDeviceName(_ name: String) {
+        queue.async { [weak self] in
+            guard let self else { return }
+            let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard self.targetDeviceName != trimmed else { return }
+            self.targetDeviceName = trimmed
+            Logger.bluetooth.info("BLE 目标设备更改为: [\(trimmed.isEmpty ? "自动连接" : trimmed)]")
+
+            // 若指定了目标设备，主动断开当前连接的非目标设备
+            if !trimmed.isEmpty {
+                for session in self.sessions.values {
+                    if !session.deviceName.localizedCaseInsensitiveContains(trimmed) {
+                        Logger.bluetooth.notice("断开非目标设备: \(session.deviceName)")
+                        self.centralManager?.cancelPeripheralConnection(session.peripheral)
+                    }
+                }
+            }
+
+            if self.isRunning && self.centralManager?.state == .poweredOn {
+                self.startScanning()
+            }
+        }
+    }
+
+    func rescan() {
+        queue.async { [weak self] in
+            guard let self, self.isRunning else { return }
+            self.centralManager?.stopScan()
+            self.startScanning()
+        }
+    }
+
     func start() {
         queue.async { [weak self] in
             guard let self else { return }
             guard !self.isRunning else { return }
             self.isRunning = true
-            Logger.bluetooth.notice("BLE 蓝牙同步服务启动 (CoreBluetooth)")
+            self.targetDeviceName = UserSettings.shared.targetBLEDeviceName.trimmingCharacters(in: .whitespacesAndNewlines)
+            Logger.bluetooth.notice("BLE 蓝牙同步服务启动 (CoreBluetooth), 目标设备: [\(self.targetDeviceName.isEmpty ? "自动连接" : self.targetDeviceName)]")
 
             if self.centralManager == nil {
                 self.centralManager = CBCentralManager(delegate: self, queue: self.queue)
@@ -96,6 +153,9 @@ final class BLESyncService: NSObject {
             }
             self.sessions.removeAll()
             DispatchQueue.main.async {
+                self.isScanning = false
+                self.connectedDeviceName = nil
+                self.discoveredDevices.removeAll()
                 self.heartbeatTimer?.invalidate()
                 self.heartbeatTimer = nil
             }
@@ -135,7 +195,8 @@ final class BLESyncService: NSObject {
 
     private func startScanning() {
         guard centralManager?.state == .poweredOn else { return }
-        Logger.bluetooth.info("开始扫描 BLE 副屏设备 (前缀: \(Self.deviceNamePrefix))")
+        DispatchQueue.main.async { self.isScanning = true }
+        Logger.bluetooth.info("开始扫描 BLE 副屏设备 (前缀: \(Self.deviceNamePrefix), 目标: \(self.targetDeviceName.isEmpty ? "全部" : self.targetDeviceName))")
         // 允许扫描包含任意服务或通过广播名过滤
         centralManager?.scanForPeripherals(withServices: nil, options: [
             CBCentralManagerScanOptionAllowDuplicatesKey: false
@@ -197,6 +258,10 @@ extension BLESyncService: CBCentralManagerDelegate {
             } else if central.state != .poweredOn {
                 Logger.bluetooth.notice("BLE 蓝牙未就绪 (state: \(central.state.rawValue))")
                 self.sessions.removeAll()
+                DispatchQueue.main.async {
+                    self.isScanning = false
+                    self.connectedDeviceName = nil
+                }
             }
         }
     }
@@ -210,27 +275,73 @@ extension BLESyncService: CBCentralManagerDelegate {
         let name = peripheral.name ?? (advertisementData[CBAdvertisementDataLocalNameKey] as? String) ?? ""
         guard name.localizedCaseInsensitiveContains(Self.deviceNamePrefix) else { return }
 
-        Logger.bluetooth.notice("发现 AgentRing BLE 副屏设备: \(name) [\(peripheral.identifier.uuidString)]")
+        let rssiVal = RSSI.intValue
+        let uuid = peripheral.identifier
+        let isConnected = (peripheral.state == .connected)
 
-        let session = BLESession(peripheral: peripheral)
-        sessions[peripheral.identifier] = session
-        peripheral.delegate = self
-        central.connect(peripheral, options: nil)
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            if let idx = self.discoveredDevices.firstIndex(where: { $0.id == uuid }) {
+                self.discoveredDevices[idx] = BLEDiscoveredDevice(id: uuid, name: name, rssi: rssiVal, isConnected: isConnected)
+            } else {
+                self.discoveredDevices.append(BLEDiscoveredDevice(id: uuid, name: name, rssi: rssiVal, isConnected: isConnected))
+                self.discoveredDevices.sort { $0.rssi > $1.rssi }
+            }
+        }
+
+        // 目标过滤：如果指定了设备名，则只连接匹配的设备
+        if !targetDeviceName.isEmpty {
+            guard name.localizedCaseInsensitiveContains(targetDeviceName) else {
+                return
+            }
+        }
+
+        if sessions[uuid] == nil {
+            Logger.bluetooth.notice("发现匹配的 AgentRing BLE 副屏设备: \(name) [\(uuid.uuidString), RSSI: \(rssiVal)]")
+            let session = BLESession(peripheral: peripheral)
+            sessions[uuid] = session
+            peripheral.delegate = self
+            central.connect(peripheral, options: nil)
+        }
     }
 
     func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
-        Logger.bluetooth.notice("已连接 BLE 副屏: \(peripheral.name ?? peripheral.identifier.uuidString)，正在发现服务...")
+        let name = peripheral.name ?? peripheral.identifier.uuidString
+        Logger.bluetooth.notice("已连接 BLE 副屏: \(name)，正在发现服务...")
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.connectedDeviceName = name
+            if let idx = self.discoveredDevices.firstIndex(where: { $0.id == peripheral.identifier }) {
+                self.discoveredDevices[idx].isConnected = true
+            }
+        }
         peripheral.discoverServices(nil)
     }
 
     func centralManager(_ central: CBCentralManager, didFailToConnect peripheral: CBPeripheral, error: Error?) {
         Logger.bluetooth.warning("连接 BLE 副屏失败: \(peripheral.name ?? ""), error: \(String(describing: error))")
         sessions.removeValue(forKey: peripheral.identifier)
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            if let idx = self.discoveredDevices.firstIndex(where: { $0.id == peripheral.identifier }) {
+                self.discoveredDevices[idx].isConnected = false
+            }
+        }
     }
 
     func centralManager(_ central: CBCentralManager, didDisconnectPeripheral peripheral: CBPeripheral, error: Error?) {
-        Logger.bluetooth.notice("BLE 副屏已断开连接: \(peripheral.name ?? "")")
+        let name = peripheral.name ?? peripheral.identifier.uuidString
+        Logger.bluetooth.notice("BLE 副屏已断开连接: \(name)")
         sessions.removeValue(forKey: peripheral.identifier)
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            if self.connectedDeviceName == name {
+                self.connectedDeviceName = nil
+            }
+            if let idx = self.discoveredDevices.firstIndex(where: { $0.id == peripheral.identifier }) {
+                self.discoveredDevices[idx].isConnected = false
+            }
+        }
         if isRunning {
             startScanning()
         }
