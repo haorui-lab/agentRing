@@ -9,7 +9,6 @@ import ServiceManagement
 struct GeneralSettingsView: View {
     @ObservedObject private var settings = UserSettings.shared
     @ObservedObject private var updateManager = AppUpdateManager.shared
-    @ObservedObject private var bleService = BLESyncService.shared
     @State private var showErrorAlert = false
     @State private var errorMessage = ""
 
@@ -19,7 +18,6 @@ struct GeneralSettingsView: View {
                 usageDisplayCard
                 refreshCard
                 notificationCard
-                bluetoothCard
                 launchCard
                 updateCard
                 resetCard
@@ -100,84 +98,6 @@ struct GeneralSettingsView: View {
                     .foregroundColor(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
                     .padding(.leading, 20)
-            }
-        }
-    }
-
-    private var bluetoothCard: some View {
-        SettingCard(
-            icon: "antenna.radiowaves.left.and.right",
-            iconColor: .secondary,
-            title: L.SettingsBluetooth.section,
-            hint: L.SettingsBluetooth.hint
-        ) {
-            VStack(alignment: .leading, spacing: 10) {
-                Toggle(isOn: $settings.bluetoothSyncEnabled) {
-                    Text(L.SettingsBluetooth.enable)
-                }
-                .toggleStyle(.checkbox)
-                .focusable(false)
-
-                Text(L.SettingsBluetooth.description)
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .padding(.leading, 20)
-
-                if settings.bluetoothSyncEnabled {
-                    Divider()
-                        .padding(.vertical, 2)
-                        .padding(.leading, 20)
-
-                    HStack(spacing: 8) {
-                        Text("目标副屏:")
-                            .font(.callout)
-
-                        Picker("", selection: $settings.targetBLEDeviceName) {
-                            Text("自动连接 (推荐)").tag("")
-
-                            ForEach(bleService.discoveredDevices) { device in
-                                Text("\(device.name) (\(device.rssi) dBm)\(device.isConnected ? " [已连接]" : "")")
-                                    .tag(device.name)
-                            }
-
-                            if !settings.targetBLEDeviceName.isEmpty &&
-                               !bleService.discoveredDevices.contains(where: { $0.name == settings.targetBLEDeviceName }) {
-                                Text("\(settings.targetBLEDeviceName) (未发现)").tag(settings.targetBLEDeviceName)
-                            }
-                        }
-                        .labelsHidden()
-                        .frame(maxWidth: 240)
-
-                        if bleService.isScanning {
-                            ProgressView()
-                                .scaleEffect(0.6)
-                                .frame(width: 16, height: 16)
-                        } else {
-                            Button {
-                                bleService.rescan()
-                            } label: {
-                                Image(systemName: "arrow.clockwise")
-                                    .font(.caption)
-                            }
-                            .buttonStyle(.plain)
-                            .help("刷新附近设备")
-                        }
-                    }
-                    .padding(.leading, 20)
-
-                    if let connected = bleService.connectedDeviceName {
-                        HStack(spacing: 6) {
-                            Circle()
-                                .fill(Color.green)
-                                .frame(width: 7, height: 7)
-                            Text("当前连接: \(connected)")
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-                        }
-                        .padding(.leading, 20)
-                    }
-                }
             }
         }
     }

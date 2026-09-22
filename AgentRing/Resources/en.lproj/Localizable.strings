@@ -50,6 +50,7 @@
 // MARK: - Settings - Tabs
 "settings.tab.general" = "General";
 "settings.tab.auth" = "Authentication Settings";
+"settings.tab.bluetooth" = "Companion Display";
 "settings.tab.about" = "About";
 
 // MARK: - Settings - General

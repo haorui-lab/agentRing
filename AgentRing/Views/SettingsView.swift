@@ -32,6 +32,8 @@ struct SettingsView: View {
                 case 1:
                     AuthSettingsView()
                 case 2:
+                    BluetoothSettingsView()
+                case 3:
                     AboutView()
                 default:
                     GeneralSettingsView()
@@ -84,7 +86,7 @@ struct SettingsView: View {
 // MARK: - Sidebar Tab
 
 private enum SidebarTab: Int, CaseIterable, Identifiable {
-    case general = 0, auth = 1, about = 2
+    case general = 0, auth = 1, bluetooth = 2, about = 3
 
     var id: Int { rawValue }
 
@@ -92,6 +94,7 @@ private enum SidebarTab: Int, CaseIterable, Identifiable {
         switch self {
         case .general: return "gearshape"
         case .auth: return "key.horizontal"
+        case .bluetooth: return "antenna.radiowaves.left.and.right"
         case .about: return "info.circle"
         }
     }
@@ -100,6 +103,7 @@ private enum SidebarTab: Int, CaseIterable, Identifiable {
         switch self {
         case .general: return L.SettingsTab.general
         case .auth: return L.SettingsTab.auth
+        case .bluetooth: return L.SettingsTab.bluetooth
         case .about: return L.SettingsTab.about
         }
     }

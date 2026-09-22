@@ -154,7 +154,7 @@ final class MenuBarManager: ObservableObject {
             checkForUpdates()
         case .about:
             closePopover()
-            openSettingsWindow(tab: 2)
+            openSettingsWindow(tab: 3)
         case .codexRelogin:
             closePopover()
             WebLoginWindowManager.shared.showCodexLoginWindow()
@@ -285,7 +285,8 @@ final class MenuBarManager: ObservableObject {
     @objc func openSettings() { openSettingsWindow(tab: 0) }
     @objc func openGeneralSettings() { openSettingsWindow(tab: 0) }
     @objc func openAuthSettings() { openSettingsWindow(tab: 1) }
-    @objc func openAbout() { openSettingsWindow(tab: 2) }
+    @objc func openBluetoothSettings() { openSettingsWindow(tab: 2) }
+    @objc func openAbout() { openSettingsWindow(tab: 3) }
 
     @objc func switchCodexAccount(_ sender: NSMenuItem) {
         guard let account = sender.representedObject as? Account else { return }

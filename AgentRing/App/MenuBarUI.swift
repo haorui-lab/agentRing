@@ -190,6 +190,12 @@ final class MenuBarUI {
         setMenuItemIcon(authItem, systemName: "key.horizontal")
         menu.addItem(authItem)
 
+        let bluetoothItem = NSMenuItem(title: L.SettingsTab.bluetooth, action: #selector(MenuBarManager.openBluetoothSettings), keyEquivalent: "b")
+        bluetoothItem.target = target
+        bluetoothItem.keyEquivalentModifierMask = [.command, .shift]
+        setMenuItemIcon(bluetoothItem, systemName: "antenna.radiowaves.left.and.right")
+        menu.addItem(bluetoothItem)
+
         let updateItem = NSMenuItem(title: L.Menu.checkUpdates, action: #selector(MenuBarManager.checkForUpdates), keyEquivalent: "u")
         updateItem.target = target
         if hasUpdate && shouldShowBadge {

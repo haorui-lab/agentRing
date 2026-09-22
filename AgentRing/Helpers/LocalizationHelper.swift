@@ -96,6 +96,7 @@ enum L {
     enum SettingsTab {
         static var general: String { localized("settings.tab.general") }
         static var auth: String { localized("settings.tab.auth") }
+        static var bluetooth: String { localized("settings.tab.bluetooth") }
         static var about: String { localized("settings.tab.about") }
     }
     
