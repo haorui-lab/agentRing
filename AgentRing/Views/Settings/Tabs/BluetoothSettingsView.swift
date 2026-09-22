@@ -17,7 +17,6 @@ struct BluetoothSettingsView: View {
         SettingsPaneScroll {
             VStack(spacing: 16) {
                 companionSyncCard
-                hardwareSupportCard
                 openSourceCard
             }
         }
@@ -127,94 +126,69 @@ struct BluetoothSettingsView: View {
         }
     }
 
-    // MARK: - 支持硬件与协议说明
-
-    private var hardwareSupportCard: some View {
-        SettingCard(
-            icon: "display.2",
-            iconColor: .secondary,
-            title: "副屏支持与通信协议",
-            hint: "副屏通过本地低功耗蓝牙 (BLE GATT) 串口直接接收推流数据，免配对、低功耗。"
-        ) {
-            VStack(alignment: .leading, spacing: 10) {
-                HStack(alignment: .top, spacing: 10) {
-                    Image(systemName: "cpu")
-                        .foregroundColor(.blue)
-                        .frame(width: 20)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("ESP32-P4 / ESP32-S3 LCD 彩屏副屏")
-                            .font(.callout)
-                            .fontWeight(.medium)
-                        Text("支持 7 寸 (1024×600) / 4.3 寸等电容触摸屏，硬件 LVGL 渲染三色模型环、实时时钟及背光快捷控制。")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                    }
-                }
-
-                HStack(alignment: .top, spacing: 10) {
-                    Image(systemName: "iphone.and.arrow.forward")
-                        .foregroundColor(.green)
-                        .frame(width: 20)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Android 桌面悬浮副屏")
-                            .font(.callout)
-                            .fontWeight(.medium)
-                        Text("支持闲置 Android 手机、墨水屏电子书作为桌面专属监控副屏。")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                    }
-                }
-
-                HStack(alignment: .top, spacing: 10) {
-                    Image(systemName: "bolt.horizontal.circle")
-                        .foregroundColor(.orange)
-                        .frame(width: 20)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("传输协议与保活")
-                            .font(.callout)
-                            .fontWeight(.medium)
-                        Text("采用 Nordic UART (NUS) 串口协议，15 秒静默 Ping 保活对时，单行紧凑 JSON 报文传输。")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                    }
-                }
-            }
-        }
-    }
-
-    // MARK: - 开源副屏固件仓库
+    // MARK: - 开源副屏项目
 
     private var openSourceCard: some View {
         SettingCard(
-            icon: "chevron.left.forwardslash.chevron.right",
+            icon: "display.2",
             iconColor: .secondary,
-            title: "开源副屏固件与源码",
-            hint: "所有副屏客户端代码均已在 GitHub 完全开源，支持自行克隆、编译与二次定制。"
+            title: "开源副屏项目",
+            hint: "支持使用闲置的 Android 手机、平板，或 ESP32 硬件屏幕作为桌面副屏。"
         ) {
-            HStack(spacing: 12) {
-                Button {
-                    if let url = URL(string: "https://github.com/haorui-lab/agentRing-ESP32-LCD") {
-                        NSWorkspace.shared.open(url)
-                    }
-                } label: {
-                    HStack(spacing: 6) {
-                        Image(systemName: "link")
-                        Text("ESP32 LCD 固件源码 (GitHub)")
-                    }
-                }
-                .buttonStyle(.bordered)
+            VStack(alignment: .leading, spacing: 12) {
+                Text("配套的副屏客户端与固件均已开源，可按需下载安装或自行编译：")
+                    .font(.callout)
+                    .foregroundColor(.secondary)
 
-                Button {
-                    if let url = URL(string: "https://github.com/haorui-lab/agentRing-Android") {
-                        NSWorkspace.shared.open(url)
+                HStack(spacing: 12) {
+                    // Android 副屏（排在前面）
+                    Link(destination: URL(string: "https://github.com/davidhoo/agentRing-Android")!) {
+                        HStack(spacing: 6) {
+                            Image(systemName: "safari")
+                                .font(.system(size: 13))
+                                .foregroundColor(.accentColor)
+
+                            Text("Android 副屏客户端")
+                                .font(.system(size: 13, weight: .medium))
+                                .foregroundColor(.primary)
+
+                            Image(systemName: "arrow.up.right")
+                                .font(.system(size: 10))
+                                .foregroundColor(.secondary)
+                        }
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 7)
+                        .background(
+                            RoundedRectangle(cornerRadius: 8)
+                                .fill(Color(nsColor: .separatorColor).opacity(0.3))
+                        )
                     }
-                } label: {
-                    HStack(spacing: 6) {
-                        Image(systemName: "link")
-                        Text("Android 副屏客户端 (GitHub)")
+                    .buttonStyle(.plain)
+
+                    // ESP32 LCD 硬件副屏
+                    Link(destination: URL(string: "https://github.com/haorui-lab/agentRing-ESP32-LCD")!) {
+                        HStack(spacing: 6) {
+                            Image(systemName: "safari")
+                                .font(.system(size: 13))
+                                .foregroundColor(.accentColor)
+
+                            Text("ESP32 LCD 硬件副屏")
+                                .font(.system(size: 13, weight: .medium))
+                                .foregroundColor(.primary)
+
+                            Image(systemName: "arrow.up.right")
+                                .font(.system(size: 10))
+                                .foregroundColor(.secondary)
+                        }
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 7)
+                        .background(
+                            RoundedRectangle(cornerRadius: 8)
+                                .fill(Color(nsColor: .separatorColor).opacity(0.3))
+                        )
                     }
+                    .buttonStyle(.plain)
                 }
-                .buttonStyle(.bordered)
             }
         }
     }
