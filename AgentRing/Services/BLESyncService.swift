@@ -83,6 +83,7 @@ final class BLESyncService: NSObject, ObservableObject {
     private var sessions: [UUID: BLESession] = [:]
     private var lastPayloadLine: String?
     private var heartbeatTimer: Timer?
+    private var scanTimeoutWorkItem: DispatchWorkItem?
 
     private let queue = DispatchQueue(label: "app.agentring.ble")
 
@@ -121,7 +122,7 @@ final class BLESyncService: NSObject, ObservableObject {
     func rescan() {
         queue.async { [weak self] in
             guard let self, self.isRunning else { return }
-            self.centralManager?.stopScan()
+            self.stopScanning()
             self.startScanning()
         }
     }
@@ -147,6 +148,8 @@ final class BLESyncService: NSObject, ObservableObject {
         queue.async { [weak self] in
             guard let self else { return }
             self.isRunning = false
+            self.scanTimeoutWorkItem?.cancel()
+            self.scanTimeoutWorkItem = nil
             self.centralManager?.stopScan()
             for session in self.sessions.values {
                 self.centralManager?.cancelPeripheralConnection(session.peripheral)
@@ -193,14 +196,32 @@ final class BLESyncService: NSObject, ObservableObject {
 
     // MARK: - 内部扫描与发送
 
-    private func startScanning() {
+    private func startScanning(duration: TimeInterval = 6.0) {
         guard centralManager?.state == .poweredOn else { return }
+        scanTimeoutWorkItem?.cancel()
         DispatchQueue.main.async { self.isScanning = true }
         Logger.bluetooth.info("开始扫描 BLE 副屏设备 (前缀: \(Self.deviceNamePrefix), 目标: \(self.targetDeviceName.isEmpty ? "全部" : self.targetDeviceName))")
         // 允许扫描包含任意服务或通过广播名过滤
         centralManager?.scanForPeripherals(withServices: nil, options: [
             CBCentralManagerScanOptionAllowDuplicatesKey: false
         ])
+
+        let workItem = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.stopScanning()
+        }
+        scanTimeoutWorkItem = workItem
+        queue.asyncAfter(deadline: .now() + duration, execute: workItem)
+    }
+
+    private func stopScanning() {
+        scanTimeoutWorkItem?.cancel()
+        scanTimeoutWorkItem = nil
+        centralManager?.stopScan()
+        DispatchQueue.main.async {
+            self.isScanning = false
+        }
+        Logger.bluetooth.info("BLE 扫描结束 (共发现 \(self.discoveredDevices.count) 台设备)")
     }
 
     private func write(line: String, to session: BLESession) {
@@ -235,6 +256,13 @@ final class BLESyncService: NSObject, ObservableObject {
 
     private func sendHeartbeat() {
         guard isRunning else { return }
+
+        // 若当前未连接任何设备，且不在扫描中，则自动触发后台搜寻
+        if sessions.isEmpty && !isScanning && centralManager?.state == .poweredOn {
+            startScanning()
+            return
+        }
+
         let timestamp = Int(Date().timeIntervalSince1970)
         let ping = "{\"type\":\"ping\",\"timestamp\":\(timestamp)}\n"
 
@@ -257,9 +285,9 @@ extension BLESyncService: CBCentralManagerDelegate {
                 self.startScanning()
             } else if central.state != .poweredOn {
                 Logger.bluetooth.notice("BLE 蓝牙未就绪 (state: \(central.state.rawValue))")
+                self.stopScanning()
                 self.sessions.removeAll()
                 DispatchQueue.main.async {
-                    self.isScanning = false
                     self.connectedDeviceName = nil
                 }
             }
@@ -315,6 +343,7 @@ extension BLESyncService: CBCentralManagerDelegate {
                 self.discoveredDevices[idx].isConnected = true
             }
         }
+        stopScanning()
         peripheral.discoverServices(nil)
     }
 
