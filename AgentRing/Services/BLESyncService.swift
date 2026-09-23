@@ -123,6 +123,9 @@ final class BLESyncService: NSObject, ObservableObject {
         queue.async { [weak self] in
             guard let self, self.isRunning else { return }
             self.stopScanning()
+            DispatchQueue.main.async {
+                self.discoveredDevices.removeAll(where: { !$0.isConnected })
+            }
             self.startScanning()
         }
     }
@@ -309,7 +312,8 @@ extension BLESyncService: CBCentralManagerDelegate {
 
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
-            if let idx = self.discoveredDevices.firstIndex(where: { $0.id == uuid }) {
+            // 按照设备广播名去重，防止 Android 等设备因 RPA 地址轮转产生多条同名重复项
+            if let idx = self.discoveredDevices.firstIndex(where: { $0.name == name || $0.id == uuid }) {
                 self.discoveredDevices[idx] = BLEDiscoveredDevice(id: uuid, name: name, rssi: rssiVal, isConnected: isConnected)
             } else {
                 self.discoveredDevices.append(BLEDiscoveredDevice(id: uuid, name: name, rssi: rssiVal, isConnected: isConnected))
@@ -339,7 +343,7 @@ extension BLESyncService: CBCentralManagerDelegate {
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
             self.connectedDeviceName = name
-            if let idx = self.discoveredDevices.firstIndex(where: { $0.id == peripheral.identifier }) {
+            if let idx = self.discoveredDevices.firstIndex(where: { $0.id == peripheral.identifier || $0.name == name }) {
                 self.discoveredDevices[idx].isConnected = true
             }
         }
@@ -348,11 +352,12 @@ extension BLESyncService: CBCentralManagerDelegate {
     }
 
     func centralManager(_ central: CBCentralManager, didFailToConnect peripheral: CBPeripheral, error: Error?) {
-        Logger.bluetooth.warning("连接 BLE 副屏失败: \(peripheral.name ?? ""), error: \(String(describing: error))")
+        let name = peripheral.name ?? peripheral.identifier.uuidString
+        Logger.bluetooth.warning("连接 BLE 副屏失败: \(name), error: \(String(describing: error))")
         sessions.removeValue(forKey: peripheral.identifier)
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
-            if let idx = self.discoveredDevices.firstIndex(where: { $0.id == peripheral.identifier }) {
+            if let idx = self.discoveredDevices.firstIndex(where: { $0.id == peripheral.identifier || $0.name == name }) {
                 self.discoveredDevices[idx].isConnected = false
             }
         }
@@ -367,7 +372,7 @@ extension BLESyncService: CBCentralManagerDelegate {
             if self.connectedDeviceName == name {
                 self.connectedDeviceName = nil
             }
-            if let idx = self.discoveredDevices.firstIndex(where: { $0.id == peripheral.identifier }) {
+            if let idx = self.discoveredDevices.firstIndex(where: { $0.id == peripheral.identifier || $0.name == name }) {
                 self.discoveredDevices[idx].isConnected = false
             }
         }
