@@ -106,7 +106,7 @@ final class BLESyncService: NSObject, ObservableObject {
             // 若指定了目标设备，主动断开当前连接的非目标设备
             if !trimmed.isEmpty {
                 for session in self.sessions.values {
-                    if !session.deviceName.localizedCaseInsensitiveContains(trimmed) {
+                    if session.deviceName != trimmed {
                         Logger.bluetooth.notice("断开非目标设备: \(session.deviceName)")
                         self.centralManager?.cancelPeripheralConnection(session.peripheral)
                     }
@@ -204,8 +204,8 @@ final class BLESyncService: NSObject, ObservableObject {
         scanTimeoutWorkItem?.cancel()
         DispatchQueue.main.async { self.isScanning = true }
         Logger.bluetooth.info("开始扫描 BLE 副屏设备 (前缀: \(Self.deviceNamePrefix), 目标: \(self.targetDeviceName.isEmpty ? "全部" : self.targetDeviceName))")
-        // 允许扫描包含任意服务或通过广播名过滤
-        centralManager?.scanForPeripherals(withServices: nil, options: [
+        // 使用 Service UUID 过滤，仅发现包含 Nordic UART Service 的设备，减少无关设备回调
+        centralManager?.scanForPeripherals(withServices: [Self.serviceUUID], options: [
             CBCentralManagerScanOptionAllowDuplicatesKey: false
         ])
 
@@ -323,7 +323,7 @@ extension BLESyncService: CBCentralManagerDelegate {
 
         // 目标过滤：如果指定了设备名，则只连接匹配的设备
         if !targetDeviceName.isEmpty {
-            guard name.localizedCaseInsensitiveContains(targetDeviceName) else {
+            guard name == targetDeviceName else {
                 return
             }
         }
