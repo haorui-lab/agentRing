@@ -28,7 +28,7 @@ enum CursorLoginNavigation {
     static func shouldReplayAsFreshLogin(method: String?, url: URL) -> Bool {
         let normalized = (method ?? "GET").uppercased()
         guard normalized != "GET", normalized != "HEAD" else { return false }
-        return isUnusableAuthDocument(url)
+        return isUnusableAuthDocument(url: url)
     }
 
     /// 主框架如果停在这些路径上，文档就是授权跳转或 404，不是登录表单。

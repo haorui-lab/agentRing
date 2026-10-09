@@ -41,7 +41,7 @@ struct CursorLoginNavigationChecks {
             "missing method is treated as GET"
         )
         expect(
-            CursorLoginNavigation.isUnusableAuthDocument(initiate),
+            CursorLoginNavigation.isUnusableAuthDocument(url: initiate),
             "initiate_login document is not a login form"
         )
 
@@ -60,7 +60,7 @@ struct CursorLoginNavigationChecks {
             !CursorLoginNavigation.shouldReplayAsFreshLogin(method: "POST", url: loginPage),
             "POST to the session login page is left alone"
         )
-        expect(!CursorLoginNavigation.isUnusableAuthDocument(loginPage), "session login page is usable")
+        expect(!CursorLoginNavigation.isUnusableAuthDocument(url: loginPage), "session login page is usable")
 
         let elsewhere = URL(string: "https://example.com/user_management/initiate_login")!
         expect(
@@ -70,7 +70,7 @@ struct CursorLoginNavigationChecks {
 
         let slashed = URL(string: "https://authenticate.cursor.sh/user_management/initiate_login/")!
         expect(
-            CursorLoginNavigation.isUnusableAuthDocument(slashed),
+            CursorLoginNavigation.isUnusableAuthDocument(url: slashed),
             "trailing slash still matches the trap path"
         )
     }

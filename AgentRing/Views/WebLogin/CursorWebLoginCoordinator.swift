@@ -201,7 +201,7 @@ extension CursorWebLoginCoordinator {
             if coordinator.authRedirectGaveUp { return }
             if case .validating = coordinator.loginState { return }
             if case .success = coordinator.loginState { return }
-            if let url = webView.url, CursorLoginNavigation.isUnusableAuthDocument(url) {
+            if let url = webView.url, CursorLoginNavigation.isUnusableAuthDocument(url: url) {
                 coordinator.recoverFromAuthRedirectTrap()
                 return
             }
