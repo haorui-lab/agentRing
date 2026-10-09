@@ -458,6 +458,7 @@
 "weblogin.codex_waiting_for_login" = "Please sign in to your ChatGPT account";
 "weblogin.cursor_window_title" = "Sign in to Cursor";
 "weblogin.cursor_waiting_for_login" = "Please sign in to your Cursor account";
+"weblogin.cursor_login_failed" = "Couldn't open the Cursor sign-in page. Close this window and try again.";
 
 // MARK: - Codex Account (v2.7.0)
 "account.codex_accounts" = "Codex Accounts";

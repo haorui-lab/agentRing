@@ -51,6 +51,9 @@ jobs:
       - name: Validate encrypted credential store
         run: bash Scripts/test-credential-store.sh
 
+      - name: Validate Cursor login navigation
+        run: bash Scripts/test-cursor-login-navigation.sh
+
       - name: Validate ring display logic
         run: bash Scripts/test-ring-display.sh
 

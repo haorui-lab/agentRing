@@ -456,6 +456,7 @@
 "weblogin.codex_waiting_for_login" = "请登录您的 ChatGPT 账户";
 "weblogin.cursor_window_title" = "登录 Cursor";
 "weblogin.cursor_waiting_for_login" = "请登录你的 Cursor 账号";
+"weblogin.cursor_login_failed" = "无法打开 Cursor 登录页。请关闭窗口后重试。";
 
 // MARK: - Codex Account (v2.7.0)
 "account.codex_accounts" = "Codex 账户";

@@ -7,7 +7,7 @@ import Combine
 import Foundation
 import WebKit
 import AppKit
-import os
+import OSLog
 
 final class CursorWebLoginCoordinator: ObservableObject {
     enum LoginState: Equatable {
@@ -28,6 +28,9 @@ final class CursorWebLoginCoordinator: ObservableObject {
     private var navigationDelegate: NavigationDelegate?
     private var uiDelegate: UIDelegate?
     private let apiService = CursorAPIService()
+    private var authRedirectRecoveries = 0
+    private var authRedirectRecoveryScheduled = false
+    fileprivate var authRedirectGaveUp = false
 
     private let allowedDomains: Set<String> = [
         "cursor.com",
@@ -75,9 +78,43 @@ final class CursorWebLoginCoordinator: ObservableObject {
     }
 
     func loadLoginPage() {
-        guard let url = URL(string: "https://authenticator.cursor.sh/") else { return }
+        authRedirectRecoveries = 0
+        authRedirectRecoveryScheduled = false
+        authRedirectGaveUp = false
+        performLoginLoad()
+    }
+
+    /// 从 Cursor 自己的登录入口发起 GET，让服务端签发 authorization session。
+    /// 不要加载裸的 authenticator.cursor.sh：见 `CursorLoginNavigation`。
+    private func performLoginLoad() {
+        guard let url = CursorLoginNavigation.startURL else { return }
         loginState = .loading
-        webView.load(URLRequest(url: url))
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.cachePolicy = .reloadIgnoringLocalCacheData
+        webView.load(request)
+    }
+
+    /// 把误打到 GET-only WorkOS 路由的导航换成一次新的登录 GET。
+    fileprivate func recoverFromAuthRedirectTrap() {
+        if authRedirectRecoveryScheduled { return }
+        guard authRedirectRecoveries < CursorLoginNavigation.maxRecoveries else {
+            authRedirectGaveUp = true
+            loginState = .failed(message: L.WebLogin.cursorLoginPageFailed)
+            webView.loadHTMLString(
+                "<html><body style=\"background:transparent\"></body></html>",
+                baseURL: nil
+            )
+            return
+        }
+        authRedirectRecoveryScheduled = true
+        authRedirectRecoveries += 1
+        Logger.settings.error("Cursor 登录撞上 WorkOS GET-only 路由，改为重新打开 \(CursorLoginNavigation.startURLString, privacy: .public)")
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.authRedirectRecoveryScheduled = false
+            self.performLoginLoad()
+        }
     }
 
     func setOnAccountCreated(_ callback: @escaping (Account) -> Void) {
@@ -155,13 +192,19 @@ extension CursorWebLoginCoordinator {
 
         func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
             guard let coordinator, coordinator.loginState != .validating else { return }
+            if coordinator.authRedirectGaveUp { return }
             coordinator.loginState = .loading
         }
 
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
             guard let coordinator else { return }
+            if coordinator.authRedirectGaveUp { return }
             if case .validating = coordinator.loginState { return }
             if case .success = coordinator.loginState { return }
+            if let url = webView.url, CursorLoginNavigation.isUnusableAuthDocument(url) {
+                coordinator.recoverFromAuthRedirectTrap()
+                return
+            }
             coordinator.loginState = .waitingForLogin
 
             let host = webView.url?.host?.lowercased() ?? ""
@@ -185,6 +228,15 @@ extension CursorWebLoginCoordinator {
                   let url = navigationAction.request.url,
                   let host = url.host?.lowercased() else {
                 decisionHandler(.allow)
+                return
+            }
+
+            if CursorLoginNavigation.shouldReplayAsFreshLogin(
+                method: navigationAction.request.httpMethod,
+                url: url
+            ) {
+                decisionHandler(.cancel)
+                coordinator.recoverFromAuthRedirectTrap()
                 return
             }
 

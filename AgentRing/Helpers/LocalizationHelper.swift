@@ -515,6 +515,7 @@ enum L {
         static var codexWaitingForLogin: String { localized("weblogin.codex_waiting_for_login") }
         static var cursorWindowTitle: String { localized("weblogin.cursor_window_title") }
         static var cursorWaitingForLogin: String { localized("weblogin.cursor_waiting_for_login") }
+        static var cursorLoginPageFailed: String { localized("weblogin.cursor_login_failed") }
         static var validating: String { localized("weblogin.validating") }
         static func success(_ name: String) -> String {
             String(format: localized("weblogin.success"), name)
