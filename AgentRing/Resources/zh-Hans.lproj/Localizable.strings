@@ -45,7 +45,7 @@
 
 // MARK: - Provider brand (column header)
 "provider.cursor" = "Cursor";
-"provider.spacexai" = "SpaceXAI";
+"provider.cursor_grok" = "Cursor/Grok";
 "usage.cursor_relogin" = "重新登录";
 "usage.antigravity_title" = "Antigravity";
 "usage.antigravity_relogin" = "重新登录";

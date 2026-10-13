@@ -61,8 +61,8 @@ struct CursorUsageMapperChecks {
         expect(usage.onDemand == nil, "x-sub plus fixture has no onDemand")
         expect(usage.presentation.billingMode == .xSubscription, "plus+weekly → xSubscription")
         expect(
-            usage.presentation.columnBrandKey == CursorPresentationBuilder.BrandKey.spacexai,
-            "x-sub column brand key is provider.spacexai"
+            usage.presentation.columnBrandKey == CursorPresentationBuilder.BrandKey.cursorGrok,
+            "x-sub column brand key is provider.cursor_grok"
         )
         expect(usage.presentation.cadence == .weekly, "plus cycle ~7d → weekly")
         expect(usage.presentation.membershipDisplayName == "Plus", "Plus display name")
@@ -328,9 +328,9 @@ struct CursorUsageMapperChecks {
             onDemandLabelKey: nil,
             billingMode: .xSubscription
         )
-        expect(xSub.columnBrandKey == CursorPresentationBuilder.BrandKey.spacexai, "xSubscription → provider.spacexai")
+        expect(xSub.columnBrandKey == CursorPresentationBuilder.BrandKey.cursorGrok, "xSubscription → provider.cursor_grok")
         expect(CursorPresentationBuilder.BrandKey.cursor == "provider.cursor", "BrandKey.cursor string")
-        expect(CursorPresentationBuilder.BrandKey.spacexai == "provider.spacexai", "BrandKey.spacexai string")
+        expect(CursorPresentationBuilder.BrandKey.cursorGrok == "provider.cursor_grok", "BrandKey.cursorGrok string")
     }
 
     static func fixedNow() -> Date {

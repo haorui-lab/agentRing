@@ -95,7 +95,7 @@ enum L {
     // MARK: - Provider brand (column / BLE payload name)
     enum Provider {
         static var cursor: String { localized("provider.cursor") }
-        static var spacexai: String { localized("provider.spacexai") }
+        static var cursorGrok: String { localized("provider.cursor_grok") }
     }
     
     // MARK: - Settings Tabs

@@ -40,7 +40,7 @@ struct CursorPresentation: Sendable, Equatable {
     /// Views must use this (via CursorUsageFormatter) instead of switching on membershipType.
     var columnBrandKey: String {
         switch billingMode {
-        case .xSubscription: return CursorPresentationBuilder.BrandKey.spacexai
+        case .xSubscription: return CursorPresentationBuilder.BrandKey.cursorGrok
         case .legacyCursor: return CursorPresentationBuilder.BrandKey.cursor
         }
     }
@@ -60,7 +60,7 @@ enum CursorPresentationBuilder {
     /// Column / provider brand keys (Localizable.strings). Distinct from membership plan names.
     enum BrandKey {
         static let cursor = "provider.cursor"
-        static let spacexai = "provider.spacexai"
+        static let cursorGrok = "provider.cursor_grok"
     }
 
     static func from(
