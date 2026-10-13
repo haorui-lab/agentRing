@@ -15,6 +15,8 @@ struct CursorUsageMapperChecks {
         checkAmbiguousOddCycle(fixturesRoot)
         checkAmbiguousPlusMonthly(fixturesRoot)
         checkXSubPremiumMonthly(fixturesRoot)
+        checkDashboardWeeklyPremium(fixturesRoot)
+        checkDashboardWeeklyPremiumNumericMillis(fixturesRoot)
         checkCadenceHelpers()
         checkMembershipDisplayNames()
 
@@ -139,7 +141,57 @@ struct CursorUsageMapperChecks {
         expect(usage.presentation.secondaryLabelKey == nil, "no second-row label when only included")
     }
 
+    static func checkDashboardWeeklyPremium(_ root: URL) {
+        let usage = mapDashboardFixtures(
+            root,
+            periodName: "dashboard-current-period-weekly-premium.json",
+            planName: "dashboard-plan-info-weekly-premium.json"
+        )
+        expect(abs((usage.included?.percentage ?? -1) - 4.615) < 0.001, "dashboard included ~4.615% from autoPercentUsed")
+        expect(usage.secondary == nil, "dashboard X weekly premium has no apiPercent secondary")
+        expect(usage.onDemand == nil, "dashboard sample has no on-demand")
+        expect(usage.presentation.billingMode == .xSubscription, "dashboard merged+weekly → xSubscription")
+        expect(usage.presentation.cadence == .weekly, "INCLUDED_USAGE_PERIOD_WEEKLY → weekly")
+        expect(usage.presentation.membershipDisplayName == "Premium", "dashboard planName Premium")
+        expect(
+            usage.presentation.includedLabelKey == CursorPresentationBuilder.LabelKey.includedWeekly,
+            "dashboard uses included weekly label (包含用量)"
+        )
+        expect(usage.presentation.secondaryKind == .absent, "dashboard secondaryKind absent")
+        expect(usage.presentation.secondaryLabelKey == nil, "dashboard no secondary label")
+
+        // Epoch millis string "1792483310183" → 2026-10-20T08:01:50.183Z
+        let cal = ISO8601DateFormatter()
+        cal.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let expectedEnd = cal.date(from: "2026-10-20T08:01:50.183Z")!
+        expect(
+            abs((usage.included?.resetsAt?.timeIntervalSince1970 ?? 0) - expectedEnd.timeIntervalSince1970) < 0.01,
+            "dashboard resetsAt from billingCycleEnd millis"
+        )
+        expect(
+            abs((usage.billingCycleEnd?.timeIntervalSince1970 ?? 0) - expectedEnd.timeIntervalSince1970) < 0.01,
+            "dashboard billingCycleEnd millis"
+        )
+
+        // showRemainingMode → ~95–96% remaining
+        let remaining = 100.0 - (usage.included?.percentage ?? 0)
+        expect(remaining > 95.0 && remaining < 96.0, "dashboard remaining ~95–96%")
+    }
+
+    static func checkDashboardWeeklyPremiumNumericMillis(_ root: URL) {
+        let usage = mapDashboardFixtures(
+            root,
+            periodName: "dashboard-current-period-weekly-premium-numeric-ms.json",
+            planName: "dashboard-plan-info-weekly-premium.json"
+        )
+        expect(abs((usage.included?.percentage ?? -1) - 4.615) < 0.001, "numeric-ms included ~4.615%")
+        expect(usage.presentation.billingMode == .xSubscription, "numeric-ms still xSubscription via plan-info")
+        expect(usage.presentation.cadence == .weekly, "numeric-ms weekly cadence")
+        expect(usage.secondary == nil, "numeric-ms no invented Other Models")
+    }
+
     static func checkCadenceHelpers() {
+
         let cal = ISO8601DateFormatter()
         cal.formatOptions = [.withInternetDateTime]
         let start = cal.date(from: "2026-10-06T00:00:00Z")!
@@ -185,6 +237,32 @@ struct CursorUsageMapperChecks {
             CursorPresentationBuilder.inferBillingMode(membershipToken: "ultra", cadence: .weekly) == .xSubscription,
             "ultra+weekly → xSubscription"
         )
+        expect(
+            CursorPresentationBuilder.inferBillingMode(
+                membershipToken: nil,
+                cadence: .unknown,
+                isMerged: true,
+                includedUsagePeriod: nil
+            ) == .xSubscription,
+            "isMerged alone → xSubscription"
+        )
+        expect(
+            CursorPresentationBuilder.inferBillingMode(
+                membershipToken: nil,
+                cadence: .unknown,
+                isMerged: nil,
+                includedUsagePeriod: "INCLUDED_USAGE_PERIOD_WEEKLY"
+            ) == .xSubscription,
+            "WEEKLY includedUsagePeriod → xSubscription"
+        )
+        expect(
+            CursorPresentationBuilder.inferCadence(
+                start: nil,
+                end: nil,
+                includedUsagePeriod: "INCLUDED_USAGE_PERIOD_WEEKLY"
+            ) == .weekly,
+            "includedUsagePeriod WEEKLY overrides missing dates"
+        )
     }
 
     // MARK: - Helpers
@@ -197,6 +275,20 @@ struct CursorUsageMapperChecks {
             return CursorUsageMapper.map(response, now: fixedNow())
         } catch {
             fputs("FAIL: could not load/decode \(name): \(error)\n", stderr)
+            exit(1)
+        }
+    }
+
+    static func mapDashboardFixtures(_ root: URL, periodName: String, planName: String) -> CursorUsageData {
+        do {
+            let periodData = try Data(contentsOf: root.appendingPathComponent(periodName))
+            let planData = try Data(contentsOf: root.appendingPathComponent(planName))
+            let period = try JSONDecoder().decode(CursorCurrentPeriodUsageResponse.self, from: periodData)
+            let plan = try JSONDecoder().decode(CursorPlanInfoResponse.self, from: planData)
+            expect(period.isUsableForMapping, "dashboard period fixture is usable")
+            return CursorUsageMapper.map(period: period, plan: plan, now: fixedNow())
+        } catch {
+            fputs("FAIL: could not load/decode dashboard fixtures \(periodName) + \(planName): \(error)\n", stderr)
             exit(1)
         }
     }

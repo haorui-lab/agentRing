@@ -45,7 +45,19 @@ class CursorAPIService: UsageProvider {
             return
         }
 
-        fetchUsageSummary(sessionToken: settings.cursorSessionToken, completion: completion)
+        let token = settings.cursorSessionToken
+        fetchDashboardUsage(sessionToken: token) { [weak self] result in
+            guard let self else { return }
+            switch result {
+            case .success(let usage):
+                completion(.success(usage))
+            case .failure(let error):
+                Logger.api.info(
+                    "Cursor dashboard usage unavailable (\(error.localizedDescription, privacy: .public)); falling back to usage-summary"
+                )
+                self.fetchUsageSummary(sessionToken: token, completion: completion)
+            }
+        }
     }
 
     func validateSessionToken(_ sessionToken: String, completion: @escaping (Result<CursorAuthMeResponse, Error>) -> Void) {
@@ -79,6 +91,109 @@ class CursorAPIService: UsageProvider {
                 completion(.success(decoded))
             } catch {
                 Logger.api.error("Cursor auth/me 解码失败: \(error.localizedDescription)")
+                completion(.failure(UsageError.decodingError))
+            }
+        }
+        activeTasks.append(task)
+        task.resume()
+    }
+
+    /// Prefer live dashboard period + plan-info (weekly X Subscription). Falls back to usage-summary on failure.
+    private func fetchDashboardUsage(sessionToken: String, completion: @escaping (Result<CursorUsageData, Error>) -> Void) {
+        let group = DispatchGroup()
+        let lock = NSLock()
+        var periodResult: Result<CursorCurrentPeriodUsageResponse, Error>?
+        var planResult: Result<CursorPlanInfoResponse, Error>?
+
+        group.enter()
+        postDashboardJSON(
+            path: "/api/dashboard/get-current-period-usage",
+            sessionToken: sessionToken
+        ) { (result: Result<CursorCurrentPeriodUsageResponse, Error>) in
+            lock.lock()
+            periodResult = result
+            lock.unlock()
+            group.leave()
+        }
+
+        group.enter()
+        postDashboardJSON(
+            path: "/api/dashboard/get-plan-info",
+            sessionToken: sessionToken
+        ) { (result: Result<CursorPlanInfoResponse, Error>) in
+            lock.lock()
+            planResult = result
+            lock.unlock()
+            group.leave()
+        }
+
+        group.notify(queue: .main) {
+            guard let periodResult else {
+                completion(.failure(UsageError.networkError))
+                return
+            }
+            switch periodResult {
+            case .failure(let error):
+                completion(.failure(error))
+            case .success(let period):
+                guard period.isUsableForMapping else {
+                    completion(.failure(UsageError.decodingError))
+                    return
+                }
+                let plan: CursorPlanInfoResponse?
+                switch planResult {
+                case .success(let value):
+                    plan = value
+                case .failure, .none:
+                    plan = nil
+                }
+                let usage = CursorUsageMapper.map(period: period, plan: plan)
+                completion(.success(usage))
+            }
+        }
+    }
+
+    private func postDashboardJSON<T: Decodable>(
+        path: String,
+        sessionToken: String,
+        completion: @escaping (Result<T, Error>) -> Void
+    ) {
+        guard let url = URL(string: "https://cursor.com\(path)") else {
+            completion(.failure(UsageError.invalidURL))
+            return
+        }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.httpBody = Data("{}".utf8)
+        applyCursorHeaders(to: &request, sessionToken: sessionToken)
+
+        let task = session.dataTask(with: request) { data, response, error in
+            if let error {
+                completion(.failure(error))
+                return
+            }
+            guard let http = response as? HTTPURLResponse else {
+                completion(.failure(UsageError.networkError))
+                return
+            }
+            if http.statusCode == 401 || http.statusCode == 403 {
+                completion(.failure(UsageError.unauthorized))
+                return
+            }
+            if http.statusCode == 429 {
+                completion(.failure(UsageError.rateLimited))
+                return
+            }
+            guard (200...299).contains(http.statusCode), let data, !data.isEmpty else {
+                completion(.failure(UsageError.httpError(statusCode: http.statusCode)))
+                return
+            }
+            do {
+                let decoded = try JSONDecoder().decode(T.self, from: data)
+                completion(.success(decoded))
+            } catch {
+                Logger.api.error("Cursor \(path, privacy: .public) 解码失败: \(error.localizedDescription)")
                 completion(.failure(UsageError.decodingError))
             }
         }

@@ -2,7 +2,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 export DEVELOPER_DIR="${DEVELOPER_DIR:-/Applications/Xcode.app/Contents/Developer}"
-# Cursor usage mapper + presentation builder: legacy monthly, X-sub weekly, ambiguous → legacy.
+# Cursor usage mapper + presentation builder: legacy monthly, X-sub weekly, dashboard period+plan-info, ambiguous → legacy.
 OUT="/tmp/agentring-cursor-usage-mapper-checks"
 swiftc -swift-version 5 \
     AgentRing/Helpers/LoggerExtension.swift \

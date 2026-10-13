@@ -83,6 +83,18 @@ enum CursorPresentationBuilder {
     // MARK: - Cadence / billing detection
 
     static func inferCadence(start: Date?, end: Date?, now: Date = Date()) -> CursorPresentation.Cadence {
+        inferCadence(start: start, end: end, includedUsagePeriod: nil, now: now)
+    }
+
+    static func inferCadence(
+        start: Date?,
+        end: Date?,
+        includedUsagePeriod: String?,
+        now: Date = Date()
+    ) -> CursorPresentation.Cadence {
+        if let periodHint = cadenceFromIncludedUsagePeriod(includedUsagePeriod) {
+            return periodHint
+        }
         if let start, let end {
             let days = end.timeIntervalSince(start) / 86_400
             if days >= 5 && days <= 9 { return .weekly }
@@ -98,10 +110,41 @@ enum CursorPresentationBuilder {
         return .unknown
     }
 
+    /// Dashboard plan-info uses INCLUDED_USAGE_PERIOD_WEEKLY / _MONTHLY.
+    static func cadenceFromIncludedUsagePeriod(_ raw: String?) -> CursorPresentation.Cadence? {
+        guard let raw else { return nil }
+        let upper = raw.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+        guard !upper.isEmpty else { return nil }
+        if upper.contains("WEEKLY") { return .weekly }
+        if upper.contains("MONTHLY") { return .monthly }
+        return nil
+    }
+
     static func inferBillingMode(
         membershipToken: String?,
         cadence: CursorPresentation.Cadence
     ) -> CursorPresentation.BillingMode {
+        inferBillingMode(
+            membershipToken: membershipToken,
+            cadence: cadence,
+            isMerged: nil,
+            includedUsagePeriod: nil
+        )
+    }
+
+    static func inferBillingMode(
+        membershipToken: String?,
+        cadence: CursorPresentation.Cadence,
+        isMerged: Bool?,
+        includedUsagePeriod: String?
+    ) -> CursorPresentation.BillingMode {
+        // Dashboard plan-info: merged X billing or explicit weekly included period.
+        if isMerged == true {
+            return .xSubscription
+        }
+        if cadenceFromIncludedUsagePeriod(includedUsagePeriod) == .weekly {
+            return .xSubscription
+        }
         // Live Cursor API (2026-10): X Premium still returns a ~30d billingCycleSpan.
         // Unambiguous X tokens (plus/premium/super/x_*) → X presentation regardless of cadence.
         // Tokens that collide with classic Cursor plans (free/ultra) still need weekly cadence.
@@ -180,6 +223,46 @@ enum CursorPresentationBuilder {
                     return String(first).uppercased() + part.dropFirst()
                 }
                 .joined(separator: " ")
+        }
+    }
+
+    // MARK: - Dashboard path
+
+    static func fromDashboard(
+        planName: String?,
+        membershipToken: String?,
+        cadence: CursorPresentation.Cadence,
+        billingMode: CursorPresentation.BillingMode,
+        secondaryPool: CursorUsageData.LimitData?,
+        onDemandPool: CursorUsageData.OnDemandData?
+    ) -> CursorPresentation {
+        let membershipDisplayName: String = {
+            if let planName, !planName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                // Prefer the dashboard's display planName (e.g. "Premium") as-is when already titled.
+                let trimmed = planName.trimmingCharacters(in: .whitespacesAndNewlines)
+                if trimmed == trimmed.lowercased() || trimmed == trimmed.uppercased() {
+                    return displayName(forMembershipToken: membershipToken ?? trimmed.lowercased())
+                }
+                return trimmed
+            }
+            return displayName(forMembershipToken: membershipToken)
+        }()
+
+        switch billingMode {
+        case .xSubscription:
+            return xSubscriptionPresentation(
+                cadence: cadence,
+                membershipDisplayName: membershipDisplayName,
+                secondaryPool: secondaryPool,
+                onDemandPool: onDemandPool
+            )
+        case .legacyCursor:
+            return legacyPresentation(
+                cadence: cadence,
+                membershipDisplayName: membershipDisplayName,
+                secondaryPool: secondaryPool,
+                onDemandPool: onDemandPool
+            )
         }
     }
 
