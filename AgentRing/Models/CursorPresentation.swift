@@ -102,22 +102,49 @@ enum CursorPresentationBuilder {
         membershipToken: String?,
         cadence: CursorPresentation.Cadence
     ) -> CursorPresentation.BillingMode {
-        // Safer default: ambiguous → legacyCursor (Candidate A defaults).
-        guard cadence == .weekly, isXSubscriptionMembershipToken(membershipToken) else {
+        // Live Cursor API (2026-10): X Premium still returns a ~30d billingCycleSpan.
+        // Unambiguous X tokens (plus/premium/super/x_*) → X presentation regardless of cadence.
+        // Tokens that collide with classic Cursor plans (free/ultra) still need weekly cadence.
+        // Unknown membership → legacyCursor.
+        guard let token = membershipToken, !token.isEmpty else {
             return .legacyCursor
         }
-        return .xSubscription
+        if isUnambiguousXSubscriptionMembershipToken(token) {
+            return .xSubscription
+        }
+        if cadence == .weekly, isAmbiguousXSubscriptionMembershipToken(token) {
+            return .xSubscription
+        }
+        return .legacyCursor
     }
 
-    static func isXSubscriptionMembershipToken(_ token: String?) -> Bool {
+    /// Tokens that classic Cursor never used as membershipType — safe without weekly cadence.
+    static func isUnambiguousXSubscriptionMembershipToken(_ token: String?) -> Bool {
         guard let token, !token.isEmpty else { return false }
         if token.hasPrefix("x_") || token.hasPrefix("x-") { return true }
         switch token {
-        case "free", "plus", "premium", "super", "ultra":
+        case "plus", "premium", "super":
             return true
         default:
             return false
         }
+    }
+
+    /// Tokens that also appear on classic Cursor plans — require weekly cadence.
+    static func isAmbiguousXSubscriptionMembershipToken(_ token: String?) -> Bool {
+        guard let token, !token.isEmpty else { return false }
+        switch token {
+        case "free", "ultra":
+            return true
+        default:
+            return false
+        }
+    }
+
+    /// Any token that can select X presentation (unambiguous, or ambiguous+weekly).
+    static func isXSubscriptionMembershipToken(_ token: String?) -> Bool {
+        isUnambiguousXSubscriptionMembershipToken(token)
+            || isAmbiguousXSubscriptionMembershipToken(token)
     }
 
     static func normalizedMembershipToken(_ raw: String?) -> String? {

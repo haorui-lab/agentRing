@@ -14,6 +14,7 @@ struct CursorUsageMapperChecks {
         checkXSubWeeklyUltra(fixturesRoot)
         checkAmbiguousOddCycle(fixturesRoot)
         checkAmbiguousPlusMonthly(fixturesRoot)
+        checkXSubPremiumMonthly(fixturesRoot)
         checkCadenceHelpers()
         checkMembershipDisplayNames()
 
@@ -112,15 +113,29 @@ struct CursorUsageMapperChecks {
 
     static func checkAmbiguousPlusMonthly(_ root: URL) {
         let usage = mapFixture(root, "ambiguous-plus-monthly.json")
-        // plus token alone is not enough — need weekly cadence
-        expect(usage.presentation.billingMode == .legacyCursor, "plus+monthly → legacy (safer default)")
+        // plus is unambiguous X-tier even on a monthly cycle (live API shape).
+        expect(usage.presentation.billingMode == .xSubscription, "plus+monthly → xSubscription")
         expect(usage.presentation.cadence == .monthly, "plus monthly cadence")
         expect(
-            usage.presentation.includedLabelKey == CursorPresentationBuilder.LabelKey.includedLegacy,
-            "plus+monthly uses legacy included label"
+            usage.presentation.includedLabelKey == CursorPresentationBuilder.LabelKey.includedWeekly,
+            "plus+monthly uses X included label"
         )
         expect(usage.presentation.secondaryKind == .absent, "plus monthly no secondary pool")
         expect(usage.presentation.membershipDisplayName == "Plus", "display name still Plus")
+    }
+
+
+    static func checkXSubPremiumMonthly(_ root: URL) {
+        let usage = mapFixture(root, "x-sub-premium-monthly.json")
+        expect(usage.presentation.billingMode == .xSubscription, "premium+monthly → xSubscription (live API)")
+        expect(usage.presentation.cadence == .monthly, "premium cycle ~31d → monthly cadence")
+        expect(usage.presentation.membershipDisplayName == "Premium", "Premium display name")
+        expect(
+            usage.presentation.includedLabelKey == CursorPresentationBuilder.LabelKey.includedWeekly,
+            "premium monthly uses X included label"
+        )
+        expect(usage.presentation.secondaryKind == .apiModels, "premium monthly maps apiPercent secondary")
+        expect(usage.secondary?.percentage == 0.0, "premium monthly secondary percent")
     }
 
     static func checkCadenceHelpers() {
@@ -150,10 +165,25 @@ struct CursorUsageMapperChecks {
         expect(CursorPresentationBuilder.displayName(forMembershipToken: "premium") == "Premium", "premium → Premium")
         expect(CursorPresentationBuilder.displayName(forMembershipToken: "x_super") == "Super", "x_super → Super")
         expect(CursorPresentationBuilder.displayName(forMembershipToken: "pro_plus") == "Pro+", "pro_plus → Pro+")
-        expect(CursorPresentationBuilder.isXSubscriptionMembershipToken("ultra"), "ultra is X-tier")
+        expect(CursorPresentationBuilder.isXSubscriptionMembershipToken("ultra"), "ultra is X-tier candidate")
+        expect(CursorPresentationBuilder.isAmbiguousXSubscriptionMembershipToken("ultra"), "ultra needs weekly")
+        expect(CursorPresentationBuilder.isUnambiguousXSubscriptionMembershipToken("premium"), "premium is unambiguous X")
+        expect(CursorPresentationBuilder.isUnambiguousXSubscriptionMembershipToken("plus"), "plus is unambiguous X")
         expect(CursorPresentationBuilder.isXSubscriptionMembershipToken("x_free"), "x_free is X-tier")
         expect(!CursorPresentationBuilder.isXSubscriptionMembershipToken("pro"), "pro is not X-tier token")
         expect(!CursorPresentationBuilder.isXSubscriptionMembershipToken(nil), "nil membership is not X-tier")
+        expect(
+            CursorPresentationBuilder.inferBillingMode(membershipToken: "premium", cadence: .monthly) == .xSubscription,
+            "premium+monthly → xSubscription"
+        )
+        expect(
+            CursorPresentationBuilder.inferBillingMode(membershipToken: "ultra", cadence: .monthly) == .legacyCursor,
+            "ultra+monthly stays legacy"
+        )
+        expect(
+            CursorPresentationBuilder.inferBillingMode(membershipToken: "ultra", cadence: .weekly) == .xSubscription,
+            "ultra+weekly → xSubscription"
+        )
     }
 
     // MARK: - Helpers
