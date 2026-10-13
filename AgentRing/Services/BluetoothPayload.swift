@@ -184,57 +184,60 @@ enum BluetoothPayloadBuilder {
     // MARK: - Cursor
 
     private static func cursorProvider(from data: CursorUsageData?) -> BluetoothSyncPayload.ProviderPayload? {
-        guard let data, data.included != nil || data.apiModels != nil || data.onDemand != nil else {
+        guard let data, data.included != nil || data.secondary != nil || data.onDemand != nil else {
             return nil
         }
+
+        let includedLabel = CursorUsageFormatter.includedTitle(from: data.presentation)
+        let secondaryLabel = CursorUsageFormatter.rowTitle(for: .cursorOnDemand, presentation: data.presentation)
 
         var secondary: BluetoothSyncPayload.RingPayload?
         var rows: [BluetoothSyncPayload.RowPayload] = []
 
-        if let api = data.apiModels {
+        if let api = data.secondary {
             secondary = ring(
-                label: L.DetailRow.cursorOnDemand,
+                label: secondaryLabel,
                 percentage: api.percentage,
                 resetsAt: api.resetsAt,
                 remainingDetails: nil
             )
         } else if let onDemand = data.onDemand {
             secondary = ring(
-                label: L.DetailRow.cursorOnDemand,
+                label: secondaryLabel,
                 percentage: onDemand.percentage,
                 resetsAt: onDemand.resetsAt,
                 remainingDetails: onDemandDetails(onDemand)
             )
         }
 
-        if let api = data.apiModels {
-            rows.append(row(label: L.DetailRow.cursorOnDemand, percentage: api.percentage, resetsAt: api.resetsAt))
+        if let api = data.secondary {
+            rows.append(row(label: secondaryLabel, percentage: api.percentage, resetsAt: api.resetsAt))
         } else if let onDemand = data.onDemand {
             rows.append(row(
-                label: L.DetailRow.cursorOnDemand,
+                label: secondaryLabel,
                 percentage: onDemand.percentage,
                 resetsAt: onDemand.resetsAt
             ))
         }
 
-        // 主环：included（Cursor Models 池）
+        // 主环：included（Cursor Models / weekly included 池）
         guard let included = data.included else {
             return nil
         }
         let primary = ring(
-            label: L.DetailRow.cursorIncluded,
+            label: includedLabel,
             percentage: included.percentage,
             resetsAt: included.resetsAt,
             remainingDetails: includedDetails(included)
         )
         rows.insert(
-            row(label: L.DetailRow.cursorIncluded, percentage: included.percentage, resetsAt: included.resetsAt),
+            row(label: includedLabel, percentage: included.percentage, resetsAt: included.resetsAt),
             at: 0
         )
 
         return BluetoothSyncPayload.ProviderPayload(
             id: ProviderType.cursor.rawValue,
-            name: ProviderType.cursor.displayName,
+            name: CursorUsageFormatter.columnBrandName(from: data.presentation),
             primary: primary,
             secondary: secondary,
             rows: rows

@@ -91,6 +91,12 @@ enum L {
         static var antigravityRelogin: String { localized("usage.antigravity_relogin") }
         static var dragToReorder: String { localized("usage.drag_to_reorder") }
     }
+
+    // MARK: - Provider brand (column / BLE payload name)
+    enum Provider {
+        static var cursor: String { localized("provider.cursor") }
+        static var cursorGrok: String { localized("provider.cursor_grok") }
+    }
     
     // MARK: - Settings Tabs
     enum SettingsTab {
@@ -292,6 +298,9 @@ enum L {
         static var extraUsage: String { localized("detail_row.extra_usage") }
         static var cursorIncluded: String { localized("detail_row.cursor_included") }
         static var cursorOnDemand: String { localized("detail_row.cursor_ondemand") }
+        static var cursorIncludedWeekly: String { localized("detail_row.seven_day_limit") }
+        static var cursorAdditionalUsage: String { localized("detail_row.cursor_additional_usage") }
+        static var cursorOnDemandSpend: String { localized("detail_row.cursor_ondemand_spend") }
         static var antigravityGeminiPrimary: String { localized("detail_row.antigravity_gemini_5h") }
         static var antigravityGeminiSecondary: String { localized("detail_row.antigravity_gemini_weekly") }
         static var antigravityThirdPartyPrimary: String { localized("detail_row.antigravity_third_party_5h") }
@@ -576,6 +585,11 @@ enum L {
 
     // MARK: - Helper Methods
     
+    /// Public entry for presentation keys resolved at the usage boundary.
+    static func localizedKey(_ key: String) -> String {
+        localized(key)
+    }
+
     /// 本地化字符串辅助方法
     /// 根据用户设置的语言返回对应的本地化字符串
     /// - Parameter key: 本地化字符串的键名

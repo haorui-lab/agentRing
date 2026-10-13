@@ -30,11 +30,11 @@ struct CursorColumnView: View {
                     ActivityRingView(
                         outerPercentage: included.percentage,
                         innerPercentage: activeTypes.contains(.cursorOnDemand)
-                            ? (cursorUsageData.apiModels?.percentage ?? cursorUsageData.onDemand?.percentage)
+                            ? (cursorUsageData.secondary?.percentage ?? cursorUsageData.onDemand?.percentage)
                             : nil,
                         outerColor: UsageColorScheme.cursorIncludedColorSwiftUI(included.percentage),
                         innerColor: UsageColorScheme.cursorPairedInnerColorSwiftUI(
-                            cursorUsageData.apiModels?.percentage
+                            cursorUsageData.secondary?.percentage
                                 ?? cursorUsageData.onDemand?.percentage
                                 ?? 0
                         ),

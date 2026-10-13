@@ -1,0 +1,11 @@
+{
+  "billingCycleStart": "1791878510183",
+  "billingCycleEnd": "1792483310183",
+  "planUsage": {
+    "autoPercentUsed": 4.615,
+    "apiPercentUsed": 0,
+    "totalPercentUsed": 4.615
+  },
+  "autoModelSelectedDisplayMessage": "You've used 4.6% of your included usage",
+  "namedModelSelectedDisplayMessage": "You've used 4.6% of your included usage"
+}

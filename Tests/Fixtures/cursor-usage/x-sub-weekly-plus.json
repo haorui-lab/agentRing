@@ -1,0 +1,16 @@
+{
+  "billingCycleStart": "2026-10-06T00:00:00.000Z",
+  "billingCycleEnd": "2026-10-13T00:00:00.000Z",
+  "membershipType": "plus",
+  "isUnlimited": false,
+  "individualUsage": {
+    "plan": {
+      "enabled": true,
+      "used": 120,
+      "limit": 500,
+      "remaining": 380,
+      "autoPercentUsed": 24.0,
+      "totalPercentUsed": 24.0
+    }
+  }
+}

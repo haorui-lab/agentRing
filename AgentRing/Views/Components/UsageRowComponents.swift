@@ -295,7 +295,10 @@ struct UnifiedLimitRow: View {
     // MARK: - Computed Properties
 
     private var limitName: String {
-        type.detailDisplayName
+        if let cursorData, type == .cursorIncluded || type == .cursorOnDemand {
+            return CursorUsageFormatter.rowTitle(for: type, presentation: cursorData.presentation)
+        }
+        return type.detailDisplayName
     }
 
 
@@ -324,7 +327,7 @@ struct UnifiedLimitRow: View {
         case .codexSecondary: return codexData?.secondary?.percentage
         case .codexExtraUsage: return codexData?.extraUsage?.percentage
         case .cursorIncluded: return cursorData?.included?.percentage
-        case .cursorOnDemand: return cursorData?.apiModels?.percentage ?? cursorData?.onDemand?.percentage
+        case .cursorOnDemand: return cursorData?.secondary?.percentage ?? cursorData?.onDemand?.percentage
         case .antigravityPrimary: return antigravityData?.geminiPrimary?.percentage ?? antigravityData?.primary?.percentage
         case .antigravitySecondary: return antigravityData?.geminiSecondary?.percentage ?? antigravityData?.secondary?.percentage
         case .antigravityThirdPartyPrimary: return antigravityData?.thirdPartyPrimary?.percentage
@@ -352,8 +355,8 @@ struct UnifiedLimitRow: View {
             return showRemainingMode ? limitData.formattedCompactRemainingWithMinutes : limitData.formattedCompactResetDateWithMinutes
 
         case .cursorOnDemand:
-            if let apiModels = cursorData?.apiModels {
-                let limitData = UsageLimitData(percentage: apiModels.percentage, resetsAt: apiModels.resetsAt)
+            if let secondary = cursorData?.secondary {
+                let limitData = UsageLimitData(percentage: secondary.percentage, resetsAt: secondary.resetsAt)
                 return showRemainingMode ? limitData.formattedCompactRemainingWithMinutes : limitData.formattedCompactResetDateWithMinutes
             }
             guard let onDemand = cursorData?.onDemand else { return "-" }

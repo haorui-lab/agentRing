@@ -60,10 +60,10 @@ final class NotificationManager {
         )
         checkLimit(
             type: .cursorOnDemand,
-            current: cursorUsageData.apiModels?.percentage ?? cursorUsageData.onDemand?.percentage,
-            previous: previousData?.apiModels?.percentage ?? previousData?.onDemand?.percentage,
-            currentResetsAt: cursorUsageData.apiModels?.resetsAt ?? cursorUsageData.onDemand?.resetsAt,
-            previousResetsAt: previousData?.apiModels?.resetsAt ?? previousData?.onDemand?.resetsAt
+            current: cursorUsageData.secondary?.percentage ?? cursorUsageData.onDemand?.percentage,
+            previous: previousData?.secondary?.percentage ?? previousData?.onDemand?.percentage,
+            currentResetsAt: cursorUsageData.secondary?.resetsAt ?? cursorUsageData.onDemand?.resetsAt,
+            previousResetsAt: previousData?.secondary?.resetsAt ?? previousData?.onDemand?.resetsAt
         )
     }
 
