@@ -316,13 +316,25 @@ final class UserSettings: ObservableObject {
         }
     }
 
+    /// 后台探测到的 Antigravity 凭证是否可用（Published，供 SwiftUI / 布局只读，不碰钥匙串）
+    @Published private(set) var antigravityCredentialsPresent: Bool = false
+
     /// 本机能否读到 Antigravity 通行凭证（钥匙串 / oauth 文件）
+    /// 只读 Published 缓存；过期时由 credentialsAvailable 调度后台刷新，绝不在主线程 Process/钥匙串。
     var hasValidAntigravityCredentials: Bool {
         guard antigravityEnabled else { return false }
         #if DEBUG
         if debugModeEnabled { return true }
         #endif
-        return AntigravityAPIService.credentialsAvailable()
+        // 触发过期后台刷新（返回值忽略：布局用 Published）
+        _ = AntigravityAPIService.credentialsAvailable()
+        return antigravityCredentialsPresent
+    }
+
+    func applyAntigravityCredentialsPresent(_ present: Bool) {
+        if antigravityCredentialsPresent != present {
+            antigravityCredentialsPresent = present
+        }
     }
 
     var hasAnyValidCredentials: Bool {
@@ -726,6 +738,9 @@ final class UserSettings: ObservableObject {
 
         syncLaunchAtLoginStatus()
         applyAppearance()
+
+        // 异步探测 Antigravity 凭证，避免首次打开用量弹层时在主线程敲钥匙串
+        AntigravityAPIService.warmCredentialsCache()
     }
 
     private static func detectSystemLanguage() -> AppLanguage {

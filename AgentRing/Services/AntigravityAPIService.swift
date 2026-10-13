@@ -4,6 +4,7 @@
 //
 
 import Foundation
+import Security
 import OSLog
 
 /// Antigravity API 服务类
@@ -22,6 +23,7 @@ class AntigravityAPIService: UsageProvider {
     private static let credentialsCacheLock = NSLock()
     private static var credentialsCache: (available: Bool, checkedAt: Date)?
     private static let credentialsCacheTTL: TimeInterval = 120
+    private static var credentialsRefreshScheduled = false
 
     init() {
         let configuration = URLSessionConfiguration.default
@@ -41,29 +43,80 @@ class AntigravityAPIService: UsageProvider {
         tasks.forEach { $0.cancel() }
     }
 
-    /// 是否存在可用凭证（带短缓存，避免菜单栏频繁壳出 `security` 卡死 UI）
+    /// 是否存在可用凭证。
+    /// - 默认路径：只读缓存，过期则后台刷新；**绝不**在调用线程（尤其是主线程 SwiftUI body）上跑钥匙串 / Process。
+    /// - `forceRefresh: true`：同步探测（调用方必须已在后台队列，如 AuthSettingsView）。
     static func credentialsAvailable(forceRefresh: Bool = false) -> Bool {
-        credentialsCacheLock.lock()
-        if !forceRefresh,
-           let cached = credentialsCache,
-           Date().timeIntervalSince(cached.checkedAt) < credentialsCacheTTL {
-            let available = cached.available
-            credentialsCacheLock.unlock()
-            return available
+        if forceRefresh {
+            assert(!Thread.isMainThread, "Antigravity credentialsAvailable(forceRefresh:) must not run on the main thread")
+            return refreshCredentialsCacheSync()
         }
+
+        credentialsCacheLock.lock()
+        let cached = credentialsCache
+        let isStale = cached == nil
+            || Date().timeIntervalSince(cached!.checkedAt) >= credentialsCacheTTL
+        let available = cached?.available ?? false
         credentialsCacheLock.unlock()
 
-        let available = resolveAccessToken() != nil
-        credentialsCacheLock.lock()
-        credentialsCache = (available, Date())
-        credentialsCacheLock.unlock()
+        if isStale {
+            scheduleCredentialsRefreshIfNeeded()
+        }
         return available
+    }
+
+    /// 启动时或设置变更后主动踢一次后台探测（不阻塞调用方）。
+    static func warmCredentialsCache() {
+        scheduleCredentialsRefreshIfNeeded(force: true)
     }
 
     static func invalidateCredentialsCache() {
         credentialsCacheLock.lock()
         credentialsCache = nil
+        credentialsRefreshScheduled = false
         credentialsCacheLock.unlock()
+        // 不清空 Published：短暂保留上次结果，后台刷新完成后再更新，避免 UI 闪断
+        scheduleCredentialsRefreshIfNeeded(force: true)
+    }
+
+    /// 确认无可用凭证（探测失败 / 401）。更新缓存与 Published，不再二次调度刷新。
+    static func markCredentialsUnavailable() {
+        credentialsCacheLock.lock()
+        credentialsCache = (false, Date())
+        credentialsRefreshScheduled = false
+        credentialsCacheLock.unlock()
+        publishCredentialsPresence(false)
+    }
+
+    private static func scheduleCredentialsRefreshIfNeeded(force: Bool = false) {
+        credentialsCacheLock.lock()
+        if credentialsRefreshScheduled && !force {
+            credentialsCacheLock.unlock()
+            return
+        }
+        credentialsRefreshScheduled = true
+        credentialsCacheLock.unlock()
+
+        DispatchQueue.global(qos: .userInitiated).async {
+            _ = refreshCredentialsCacheSync()
+        }
+    }
+
+    @discardableResult
+    private static func refreshCredentialsCacheSync() -> Bool {
+        let available = resolveAccessToken() != nil
+        credentialsCacheLock.lock()
+        credentialsCache = (available, Date())
+        credentialsRefreshScheduled = false
+        credentialsCacheLock.unlock()
+        publishCredentialsPresence(available)
+        return available
+    }
+
+    private static func publishCredentialsPresence(_ available: Bool) {
+        DispatchQueue.main.async {
+            UserSettings.shared.applyAntigravityCredentialsPresent(available)
+        }
     }
 
     func fetchUsage(completion: @escaping (Result<AntigravityUsageData, Error>) -> Void) {
@@ -80,13 +133,15 @@ class AntigravityAPIService: UsageProvider {
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             guard let self else { return }
             guard let token = Self.resolveAccessToken() else {
-                Self.invalidateCredentialsCache()
+                Self.markCredentialsUnavailable()
                 DispatchQueue.main.async { completion(.failure(UsageError.noCredentials)) }
                 return
             }
             Self.credentialsCacheLock.lock()
             Self.credentialsCache = (true, Date())
+            Self.credentialsRefreshScheduled = false
             Self.credentialsCacheLock.unlock()
+            Self.publishCredentialsPresence(true)
             self.fetchCloudQuota(token: token, completion: completion)
         }
     }
@@ -107,6 +162,38 @@ class AntigravityAPIService: UsageProvider {
     }
 
     private static func readTokenFromKeychain() -> String? {
+        // 沙盒内 SecItem 往往读不到 Gemini/Antigravity 写入的通用密码；先试 API，再回退 CLI。
+        // 调用方必须保证不在主线程（credentialsAvailable 默认路径 / fetchUsage 已避开）。
+        if let viaSecItem = readTokenFromKeychainSecItem() {
+            return viaSecItem
+        }
+        return readTokenFromKeychainSecurityCLI()
+    }
+
+    private static func readTokenFromKeychainSecItem() -> String? {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: "gemini",
+            kSecAttrAccount as String: "antigravity",
+            kSecReturnData as String: true,
+            kSecMatchLimit as String: kSecMatchLimitOne
+        ]
+        var result: AnyObject?
+        let status = SecItemCopyMatching(query as CFDictionary, &result)
+        guard status == errSecSuccess,
+              let data = result as? Data,
+              let raw = String(data: data, encoding: .utf8)?
+                .trimmingCharacters(in: .whitespacesAndNewlines),
+              !raw.isEmpty else {
+            if status != errSecSuccess && status != errSecItemNotFound {
+                Logger.api.debug("SecItemCopyMatching Antigravity 钥匙串失败: \(status)")
+            }
+            return nil
+        }
+        return parseKeychainSecret(raw)
+    }
+
+    private static func readTokenFromKeychainSecurityCLI() -> String? {
         let task = Process()
         task.executableURL = URL(fileURLWithPath: "/usr/bin/security")
         task.arguments = ["find-generic-password", "-s", "gemini", "-a", "antigravity", "-w"]
@@ -203,7 +290,7 @@ class AntigravityAPIService: UsageProvider {
 
             if http.statusCode == 401 || http.statusCode == 403 {
                 Logger.api.error("Antigravity 认证失效 (\(http.statusCode))")
-                Self.invalidateCredentialsCache()
+                Self.markCredentialsUnavailable()
                 DispatchQueue.main.async { completion(.failure(UsageError.unauthorized)) }
                 return
             }

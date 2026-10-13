@@ -11,7 +11,6 @@ struct AuthSettingsView: View {
     @State private var isShowingToken = false
     @State private var showDeleteConfirmation = false
     @State private var accountToDelete: Account?
-    @State private var antigravityCredentialsPresent = false
     @State private var isRecheckingAntigravity = false
     @State private var showDiagnostics = false
 
@@ -259,16 +258,16 @@ struct AuthSettingsView: View {
             if isRecheckingAntigravity {
                 return L.Account.antigravityChecking
             }
-            return antigravityCredentialsPresent ? L.Account.antigravityReady : L.Account.antigravityMissing
+            return settings.antigravityCredentialsPresent ? L.Account.antigravityReady : L.Account.antigravityMissing
         }()
         let statusColor: Color = {
             if !settings.antigravityEnabled || isRecheckingAntigravity { return .secondary }
-            return antigravityCredentialsPresent ? .green : .orange
+            return settings.antigravityCredentialsPresent ? .green : .orange
         }()
         let statusIcon: String = {
             if !settings.antigravityEnabled { return "pause.circle" }
             if isRecheckingAntigravity { return "arrow.triangle.2.circlepath" }
-            return antigravityCredentialsPresent ? "checkmark.circle.fill" : "exclamationmark.triangle.fill"
+            return settings.antigravityCredentialsPresent ? "checkmark.circle.fill" : "exclamationmark.triangle.fill"
         }()
 
         return SettingCard(
@@ -336,12 +335,10 @@ struct AuthSettingsView: View {
     private func refreshAntigravityCredentialStatus(force: Bool = true) {
         isRecheckingAntigravity = true
         DispatchQueue.global(qos: .userInitiated).async {
-            if force {
-                AntigravityAPIService.invalidateCredentialsCache()
-            }
+            // 强制同步探测（后台队列）；credentialsAvailable(forceRefresh:) 会更新 Published 缓存
             let present = AntigravityAPIService.credentialsAvailable(forceRefresh: force)
             DispatchQueue.main.async {
-                antigravityCredentialsPresent = present
+                settings.applyAntigravityCredentialsPresent(present)
                 isRecheckingAntigravity = false
             }
         }
