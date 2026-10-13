@@ -298,7 +298,7 @@ enum L {
         static var extraUsage: String { localized("detail_row.extra_usage") }
         static var cursorIncluded: String { localized("detail_row.cursor_included") }
         static var cursorOnDemand: String { localized("detail_row.cursor_ondemand") }
-        static var cursorIncludedWeekly: String { localized("detail_row.cursor_included_weekly") }
+        static var cursorIncludedWeekly: String { localized("detail_row.seven_day_limit") }
         static var cursorAdditionalUsage: String { localized("detail_row.cursor_additional_usage") }
         static var cursorOnDemandSpend: String { localized("detail_row.cursor_ondemand_spend") }
         static var antigravityGeminiPrimary: String { localized("detail_row.antigravity_gemini_5h") }

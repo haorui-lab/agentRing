@@ -51,7 +51,8 @@ enum CursorPresentationBuilder {
     enum LabelKey {
         static let includedLegacy = "detail_row.cursor_included"
         static let secondaryApiModels = "detail_row.cursor_ondemand"
-        static let includedWeekly = "detail_row.cursor_included_weekly"
+        /// X Subscription included row — same cadence label as Codex secondary (`detail_row.seven_day_limit`).
+        static let includedWeekly = "detail_row.seven_day_limit"
         static let additionalUsage = "detail_row.cursor_additional_usage"
         static let onDemandSpend = "detail_row.cursor_ondemand_spend"
     }

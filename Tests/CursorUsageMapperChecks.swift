@@ -164,7 +164,11 @@ struct CursorUsageMapperChecks {
         expect(usage.presentation.membershipDisplayName == "Premium", "dashboard planName Premium")
         expect(
             usage.presentation.includedLabelKey == CursorPresentationBuilder.LabelKey.includedWeekly,
-            "dashboard uses included weekly label (包含用量)"
+            "dashboard uses Codex 7-day detail_row key (7天 / 7d)"
+        )
+        expect(
+            CursorPresentationBuilder.LabelKey.includedWeekly == "detail_row.seven_day_limit",
+            "X includedWeekly key is Codex detail_row.seven_day_limit"
         )
         expect(usage.presentation.secondaryKind == .absent, "dashboard secondaryKind absent")
         expect(usage.presentation.secondaryLabelKey == nil, "dashboard no secondary label")

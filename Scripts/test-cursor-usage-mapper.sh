@@ -17,7 +17,7 @@ rm -f "$OUT"
 for key in \
     "detail_row.cursor_included" \
     "detail_row.cursor_ondemand" \
-    "detail_row.cursor_included_weekly" \
+    "detail_row.seven_day_limit" \
     "detail_row.cursor_additional_usage" \
     "detail_row.cursor_ondemand_spend" \
     "provider.cursor" \
