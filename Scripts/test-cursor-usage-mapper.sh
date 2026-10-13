@@ -19,7 +19,9 @@ for key in \
     "detail_row.cursor_ondemand" \
     "detail_row.cursor_included_weekly" \
     "detail_row.cursor_additional_usage" \
-    "detail_row.cursor_ondemand_spend"
+    "detail_row.cursor_ondemand_spend" \
+    "provider.cursor" \
+    "provider.spacexai"
 do
     grep -q "\"$key\"" AgentRing/Resources/en.lproj/Localizable.strings \
         || { echo "FAIL: missing en key $key"; exit 1; }

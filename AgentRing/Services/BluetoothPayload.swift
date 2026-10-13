@@ -237,7 +237,7 @@ enum BluetoothPayloadBuilder {
 
         return BluetoothSyncPayload.ProviderPayload(
             id: ProviderType.cursor.rawValue,
-            name: ProviderType.cursor.displayName,
+            name: CursorUsageFormatter.columnBrandName(from: data.presentation),
             primary: primary,
             secondary: secondary,
             rows: rows

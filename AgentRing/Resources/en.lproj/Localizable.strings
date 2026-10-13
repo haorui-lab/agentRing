@@ -42,6 +42,10 @@
 "usage.codex_title" = "Codex";
 "usage.codex_relogin" = "Sign In Again";
 "usage.cursor_title" = "Cursor";
+
+// MARK: - Provider brand (column header)
+"provider.cursor" = "Cursor";
+"provider.spacexai" = "SpaceXAI";
 "usage.cursor_relogin" = "Sign In Again";
 "usage.antigravity_title" = "Antigravity";
 "usage.antigravity_relogin" = "Sign In Again";

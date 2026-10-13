@@ -13,6 +13,10 @@ enum CursorUsageFormatter {
         L.localizedKey(key)
     }
 
+    static func columnBrandName(from presentation: CursorPresentation) -> String {
+        localizedTitle(forKey: presentation.columnBrandKey)
+    }
+
     static func includedTitle(from presentation: CursorPresentation) -> String {
         localizedTitle(forKey: presentation.includedLabelKey)
     }

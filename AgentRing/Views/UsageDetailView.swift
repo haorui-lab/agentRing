@@ -308,7 +308,11 @@ struct UsageDetailView: View {
     private func providerTitle(for provider: ProviderType) -> String {
         switch provider {
         case .codex: return L.Usage.codexTitle
-        case .cursor: return L.Usage.cursorTitle
+        case .cursor:
+            if let cursorUsageData {
+                return CursorUsageFormatter.columnBrandName(from: cursorUsageData.presentation)
+            }
+            return L.Usage.cursorTitle
         case .antigravity: return L.Usage.antigravityTitle
         case .antigravityThird: return "Antigravity Third"
         }

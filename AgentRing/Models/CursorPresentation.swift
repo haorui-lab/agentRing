@@ -35,6 +35,15 @@ struct CursorPresentation: Sendable, Equatable {
     let secondaryKind: SecondaryKind
     let onDemandLabelKey: String?
     let billingMode: BillingMode
+
+    /// Localization key for the column / provider brand (not membership plan name).
+    /// Views must use this (via CursorUsageFormatter) instead of switching on membershipType.
+    var columnBrandKey: String {
+        switch billingMode {
+        case .xSubscription: return CursorPresentationBuilder.BrandKey.spacexai
+        case .legacyCursor: return CursorPresentationBuilder.BrandKey.cursor
+        }
+    }
 }
 
 enum CursorPresentationBuilder {
@@ -45,6 +54,12 @@ enum CursorPresentationBuilder {
         static let includedWeekly = "detail_row.cursor_included_weekly"
         static let additionalUsage = "detail_row.cursor_additional_usage"
         static let onDemandSpend = "detail_row.cursor_ondemand_spend"
+    }
+
+    /// Column / provider brand keys (Localizable.strings). Distinct from membership plan names.
+    enum BrandKey {
+        static let cursor = "provider.cursor"
+        static let spacexai = "provider.spacexai"
     }
 
     static func from(

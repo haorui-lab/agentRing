@@ -19,6 +19,7 @@ struct CursorUsageMapperChecks {
         checkDashboardWeeklyPremiumNumericMillis(fixturesRoot)
         checkCadenceHelpers()
         checkMembershipDisplayNames()
+        checkColumnBrandKeys()
 
         print("All cursor usage mapper checks passed.")
     }
@@ -32,6 +33,10 @@ struct CursorUsageMapperChecks {
         expect(usage.onDemand != nil, "legacy onDemand present")
         expect(abs((usage.onDemand?.percentage ?? -1) - 30.0) < 0.01, "legacy onDemand is 1500/5000 = 30%")
         expect(usage.presentation.billingMode == .legacyCursor, "legacy billingMode")
+        expect(
+            usage.presentation.columnBrandKey == CursorPresentationBuilder.BrandKey.cursor,
+            "legacy column brand key is provider.cursor"
+        )
         expect(usage.presentation.cadence == .monthly, "legacy cadence monthly (~30d)")
         expect(usage.presentation.membershipDisplayName == "Pro", "legacy membershipDisplayName Pro")
         expect(
@@ -55,6 +60,10 @@ struct CursorUsageMapperChecks {
         expect(usage.secondary == nil, "x-sub plus has no apiPercent secondary")
         expect(usage.onDemand == nil, "x-sub plus fixture has no onDemand")
         expect(usage.presentation.billingMode == .xSubscription, "plus+weekly → xSubscription")
+        expect(
+            usage.presentation.columnBrandKey == CursorPresentationBuilder.BrandKey.spacexai,
+            "x-sub column brand key is provider.spacexai"
+        )
         expect(usage.presentation.cadence == .weekly, "plus cycle ~7d → weekly")
         expect(usage.presentation.membershipDisplayName == "Plus", "Plus display name")
         expect(
@@ -291,6 +300,33 @@ struct CursorUsageMapperChecks {
             fputs("FAIL: could not load/decode dashboard fixtures \(periodName) + \(planName): \(error)\n", stderr)
             exit(1)
         }
+    }
+
+    static func checkColumnBrandKeys() {
+        // Brand follows billingMode only — views must not switch on membershipType.
+        let legacy = CursorPresentation(
+            cadence: .monthly,
+            membershipDisplayName: "Pro",
+            includedLabelKey: CursorPresentationBuilder.LabelKey.includedLegacy,
+            secondaryLabelKey: CursorPresentationBuilder.LabelKey.secondaryApiModels,
+            secondaryKind: .apiModels,
+            onDemandLabelKey: nil,
+            billingMode: .legacyCursor
+        )
+        expect(legacy.columnBrandKey == CursorPresentationBuilder.BrandKey.cursor, "legacyCursor → provider.cursor")
+
+        let xSub = CursorPresentation(
+            cadence: .weekly,
+            membershipDisplayName: "Premium",
+            includedLabelKey: CursorPresentationBuilder.LabelKey.includedWeekly,
+            secondaryLabelKey: nil,
+            secondaryKind: .absent,
+            onDemandLabelKey: nil,
+            billingMode: .xSubscription
+        )
+        expect(xSub.columnBrandKey == CursorPresentationBuilder.BrandKey.spacexai, "xSubscription → provider.spacexai")
+        expect(CursorPresentationBuilder.BrandKey.cursor == "provider.cursor", "BrandKey.cursor string")
+        expect(CursorPresentationBuilder.BrandKey.spacexai == "provider.spacexai", "BrandKey.spacexai string")
     }
 
     static func fixedNow() -> Date {

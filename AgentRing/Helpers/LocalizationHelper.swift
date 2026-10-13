@@ -91,6 +91,12 @@ enum L {
         static var antigravityRelogin: String { localized("usage.antigravity_relogin") }
         static var dragToReorder: String { localized("usage.drag_to_reorder") }
     }
+
+    // MARK: - Provider brand (column / BLE payload name)
+    enum Provider {
+        static var cursor: String { localized("provider.cursor") }
+        static var spacexai: String { localized("provider.spacexai") }
+    }
     
     // MARK: - Settings Tabs
     enum SettingsTab {
