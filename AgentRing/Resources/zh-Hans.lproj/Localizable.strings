@@ -280,6 +280,12 @@
 "detail_row.extra_usage" = "额外用量";
 "detail_row.cursor_included" = "Cursor 模型";
 "detail_row.cursor_ondemand" = "其他模型";
+"detail_row.cursor_included_weekly" = "包含用量";
+"detail_row.cursor_additional_usage" = "额外用量";
+"detail_row.cursor_ondemand_spend" = "按需用量";
+"cursor_included_weekly_limit" = "包含用量";
+"cursor_additional_usage_limit" = "额外用量";
+
 "detail_row.antigravity_gemini_5h" = "Gemini 5小时";
 "detail_row.antigravity_gemini_weekly" = "Gemini 7天";
 "detail_row.antigravity_third_party_5h" = "Third 5小时";

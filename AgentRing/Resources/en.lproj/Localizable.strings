@@ -280,6 +280,12 @@
 "detail_row.extra_usage" = "Extra Usage";
 "detail_row.cursor_included" = "Cursor Models";
 "detail_row.cursor_ondemand" = "Other Models";
+"detail_row.cursor_included_weekly" = "Included Usage";
+"detail_row.cursor_additional_usage" = "Additional Usage";
+"detail_row.cursor_ondemand_spend" = "On-Demand";
+"cursor_included_weekly_limit" = "Included Usage";
+"cursor_additional_usage_limit" = "Additional Usage";
+
 "detail_row.antigravity_gemini_5h" = "Gemini 5h";
 "detail_row.antigravity_gemini_weekly" = "Gemini 7d";
 "detail_row.antigravity_third_party_5h" = "Third 5h";
