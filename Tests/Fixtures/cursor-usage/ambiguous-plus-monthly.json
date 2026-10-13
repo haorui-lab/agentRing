@@ -1,0 +1,12 @@
+{
+  "billingCycleStart": "2026-09-13T00:00:00.000Z",
+  "billingCycleEnd": "2026-10-13T00:00:00.000Z",
+  "membershipType": "plus",
+  "isUnlimited": false,
+  "individualUsage": {
+    "plan": {
+      "enabled": true,
+      "autoPercentUsed": 30.0
+    }
+  }
+}

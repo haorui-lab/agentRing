@@ -57,5 +57,8 @@ jobs:
       - name: Validate ring display logic
         run: bash Scripts/test-ring-display.sh
 
+      - name: Validate Cursor usage mapper presentation
+        run: bash Scripts/test-cursor-usage-mapper.sh
+
       - name: Validate Sparkle delegate integration
         run: bash Scripts/test-update-manager.sh "$RUNNER_TEMP/SourcePackages/artifacts/sparkle/Sparkle"
