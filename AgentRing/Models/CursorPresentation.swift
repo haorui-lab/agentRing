@@ -230,14 +230,15 @@ enum CursorPresentationBuilder {
         secondaryPool: CursorUsageData.LimitData?,
         onDemandPool: CursorUsageData.OnDemandData?
     ) -> CursorPresentation {
-        // Unexpected apiPercent on an X-tier weekly response: still surface as Other Models.
+        // Mapper clears apiPercent secondary for X; if a secondary pool is passed
+        // anyway, treat it as Additional Usage rather than legacy Other Models.
         if secondaryPool != nil {
             return CursorPresentation(
                 cadence: cadence,
                 membershipDisplayName: membershipDisplayName,
                 includedLabelKey: LabelKey.includedWeekly,
-                secondaryLabelKey: LabelKey.secondaryApiModels,
-                secondaryKind: .apiModels,
+                secondaryLabelKey: LabelKey.additionalUsage,
+                secondaryKind: .additionalUsageCredits,
                 onDemandLabelKey: onDemandPool != nil ? LabelKey.additionalUsage : nil,
                 billingMode: .xSubscription
             )

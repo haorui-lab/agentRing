@@ -158,8 +158,25 @@ enum CursorUsageMapper {
     static func map(_ response: CursorUsageSummaryResponse, now: Date = Date()) -> CursorUsageData {
         let cycleEnd = parseISO8601(response.billingCycleEnd)
         let included = includedLimit(from: response, cycleEnd: cycleEnd)
-        let secondary = secondaryLimit(from: response, cycleEnd: cycleEnd)
+        let apiSecondary = secondaryLimit(from: response, cycleEnd: cycleEnd)
         let onDemand = onDemandLimit(from: response, cycleEnd: cycleEnd)
+
+        // Detect billing mode before locking secondary: on The X Subscription,
+        // apiPercentUsed is still present (often 0) but is not a separate
+        // "Other Models" product row. Second row is only real Additional Usage.
+        let cadence = CursorPresentationBuilder.inferCadence(
+            start: parseISO8601(response.billingCycleStart),
+            end: cycleEnd,
+            now: now
+        )
+        let membershipToken = CursorPresentationBuilder.normalizedMembershipToken(response.membershipType)
+        let billingMode = CursorPresentationBuilder.inferBillingMode(
+            membershipToken: membershipToken,
+            cadence: cadence
+        )
+        let secondary: CursorUsageData.LimitData? =
+            billingMode == .xSubscription ? nil : apiSecondary
+
         let presentation = CursorPresentationBuilder.from(
             response,
             secondaryPool: secondary,

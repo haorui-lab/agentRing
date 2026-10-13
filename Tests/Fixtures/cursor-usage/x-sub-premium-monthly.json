@@ -6,9 +6,18 @@
   "individualUsage": {
     "plan": {
       "enabled": true,
+      "used": 0,
+      "limit": 4615,
+      "remaining": 4615,
       "autoPercentUsed": 0.0,
       "apiPercentUsed": 0.0,
       "totalPercentUsed": 0.0
+    },
+    "onDemand": {
+      "enabled": false,
+      "used": 0,
+      "limit": null,
+      "remaining": null
     }
   }
 }

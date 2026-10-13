@@ -134,8 +134,9 @@ struct CursorUsageMapperChecks {
             usage.presentation.includedLabelKey == CursorPresentationBuilder.LabelKey.includedWeekly,
             "premium monthly uses X included label"
         )
-        expect(usage.presentation.secondaryKind == .apiModels, "premium monthly maps apiPercent secondary")
-        expect(usage.secondary?.percentage == 0.0, "premium monthly secondary percent")
+        expect(usage.secondary == nil, "X premium ignores apiPercent secondary")
+        expect(usage.presentation.secondaryKind == .absent, "no Additional Usage when onDemand off")
+        expect(usage.presentation.secondaryLabelKey == nil, "no second-row label when only included")
     }
 
     static func checkCadenceHelpers() {
