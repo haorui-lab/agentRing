@@ -7,14 +7,17 @@ import Foundation
 import OSLog
 
 struct CursorUsageData: Sendable {
-    /// Cursor Models pool (`autoPercentUsed`) — primary dashboard bar.
+    /// Cursor Models / weekly included pool (`autoPercentUsed`) — primary dashboard bar.
     let included: LimitData?
-    /// Other Models pool (`apiPercentUsed`) — secondary dashboard bar.
-    let apiModels: LimitData?
-    /// Paid on-demand spend, when Cursor exposes a dollar cap.
+    /// Secondary pool (`apiPercentUsed` when present) — renamed from apiModels.
+    let secondary: LimitData?
+    /// Paid on-demand / additional-usage spend, when Cursor exposes a dollar cap.
     let onDemand: OnDemandData?
+    /// Raw API membership token — for logging only; views use `presentation`.
     let membershipType: String?
     let billingCycleEnd: Date?
+    /// View-facing labels and cadence; built at the API boundary.
+    let presentation: CursorPresentation
 
     struct LimitData: Sendable {
         let percentage: Double
@@ -104,7 +107,7 @@ nonisolated struct CursorUsageSummaryResponse: Codable, Sendable {
         let usage = CursorUsageMapper.map(self, now: now)
         let plan = individualUsage?.plan
         Logger.api.info(
-            "Cursor map unlimited=\(self.isUnlimited ?? false, privacy: .public) total=\(plan?.totalPercentUsed ?? -1, privacy: .public) auto=\(plan?.autoPercentUsed ?? -1, privacy: .public) api=\(plan?.apiPercentUsed ?? -1, privacy: .public) included=\(usage.included?.percentage ?? -1, privacy: .public) apiModels=\(usage.apiModels?.percentage ?? -1, privacy: .public) onDemand=\(usage.onDemand?.percentage ?? -1, privacy: .public)"
+            "Cursor map unlimited=\(self.isUnlimited ?? false, privacy: .public) total=\(plan?.totalPercentUsed ?? -1, privacy: .public) auto=\(plan?.autoPercentUsed ?? -1, privacy: .public) api=\(plan?.apiPercentUsed ?? -1, privacy: .public) included=\(usage.included?.percentage ?? -1, privacy: .public) secondary=\(usage.secondary?.percentage ?? -1, privacy: .public) onDemand=\(usage.onDemand?.percentage ?? -1, privacy: .public) mode=\(usage.presentation.billingMode.rawValue, privacy: .public) cadence=\(usage.presentation.cadence.rawValue, privacy: .public)"
         )
         return usage
     }
@@ -155,15 +158,22 @@ enum CursorUsageMapper {
     static func map(_ response: CursorUsageSummaryResponse, now: Date = Date()) -> CursorUsageData {
         let cycleEnd = parseISO8601(response.billingCycleEnd)
         let included = includedLimit(from: response, cycleEnd: cycleEnd)
-        let apiModels = apiModelsLimit(from: response, cycleEnd: cycleEnd)
+        let secondary = secondaryLimit(from: response, cycleEnd: cycleEnd)
         let onDemand = onDemandLimit(from: response, cycleEnd: cycleEnd)
+        let presentation = CursorPresentationBuilder.from(
+            response,
+            secondaryPool: secondary,
+            onDemandPool: onDemand,
+            now: now
+        )
 
         return CursorUsageData(
             included: included,
-            apiModels: apiModels,
+            secondary: secondary,
             onDemand: onDemand,
             membershipType: response.membershipType,
-            billingCycleEnd: cycleEnd
+            billingCycleEnd: cycleEnd,
+            presentation: presentation
         )
     }
 
@@ -186,7 +196,7 @@ enum CursorUsageMapper {
         return nil
     }
 
-    static func apiModelsLimit(from response: CursorUsageSummaryResponse, cycleEnd: Date?) -> CursorUsageData.LimitData? {
+    static func secondaryLimit(from response: CursorUsageSummaryResponse, cycleEnd: Date?) -> CursorUsageData.LimitData? {
         guard let api = response.individualUsage?.plan?.apiPercentUsed else { return nil }
         return CursorUsageData.LimitData(
             percentage: clampPercent(api),

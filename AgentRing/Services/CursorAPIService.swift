@@ -142,27 +142,39 @@ class CursorAPIService: UsageProvider {
     private func createMockData() -> CursorUsageData {
         let included = settings.debugCursorIncludedPercentage
         let onDemandEnabled = settings.debugCursorOnDemandLimit > 0
+        let cycleEnd = Date().addingTimeInterval(60 * 60 * 24 * 12)
+        let secondaryPool = CursorUsageData.LimitData(
+            percentage: min(100, max(0, included * 0.2)),
+            resetsAt: cycleEnd,
+            used: nil,
+            limit: nil
+        )
+        let onDemandPool: CursorUsageData.OnDemandData? = onDemandEnabled ? .init(
+            percentage: settings.debugCursorOnDemandPercentage,
+            usedCents: settings.debugCursorOnDemandPercentage / 100.0 * settings.debugCursorOnDemandLimit,
+            limitCents: settings.debugCursorOnDemandLimit,
+            resetsAt: cycleEnd
+        ) : nil
         return CursorUsageData(
             included: .init(
                 percentage: included,
-                resetsAt: Date().addingTimeInterval(60 * 60 * 24 * 12),
+                resetsAt: cycleEnd,
                 used: included,
                 limit: 100
             ),
-            apiModels: .init(
-                percentage: min(100, max(0, included * 0.2)),
-                resetsAt: Date().addingTimeInterval(60 * 60 * 24 * 12),
-                used: nil,
-                limit: nil
-            ),
-            onDemand: onDemandEnabled ? .init(
-                percentage: settings.debugCursorOnDemandPercentage,
-                usedCents: settings.debugCursorOnDemandPercentage / 100.0 * settings.debugCursorOnDemandLimit,
-                limitCents: settings.debugCursorOnDemandLimit,
-                resetsAt: Date().addingTimeInterval(60 * 60 * 24 * 12)
-            ) : nil,
+            secondary: secondaryPool,
+            onDemand: onDemandPool,
             membershipType: "pro",
-            billingCycleEnd: Date().addingTimeInterval(60 * 60 * 24 * 12)
+            billingCycleEnd: cycleEnd,
+            presentation: CursorPresentation(
+                cadence: .monthly,
+                membershipDisplayName: "Pro",
+                includedLabelKey: CursorPresentationBuilder.LabelKey.includedLegacy,
+                secondaryLabelKey: CursorPresentationBuilder.LabelKey.secondaryApiModels,
+                secondaryKind: .apiModels,
+                onDemandLabelKey: onDemandPool != nil ? CursorPresentationBuilder.LabelKey.onDemandSpend : nil,
+                billingMode: .legacyCursor
+            )
         )
     }
     #endif
