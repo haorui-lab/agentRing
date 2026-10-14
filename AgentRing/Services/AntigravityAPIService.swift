@@ -24,6 +24,9 @@ class AntigravityAPIService: UsageProvider {
     private static var credentialsCache: (available: Bool, checkedAt: Date)?
     private static let credentialsCacheTTL: TimeInterval = 120
     private static var credentialsRefreshScheduled = false
+    /// 用户点「不允许」或钥匙串要求交互后，长时间内禁止再走会弹窗的路径
+    private static var interactiveKeychainBlockedUntil: Date?
+    private static let interactiveKeychainBlockTTL: TimeInterval = 24 * 60 * 60
 
     init() {
         let configuration = URLSessionConfiguration.default
@@ -45,11 +48,12 @@ class AntigravityAPIService: UsageProvider {
 
     /// 是否存在可用凭证。
     /// - 默认路径：只读缓存，过期则后台刷新；**绝不**在调用线程（尤其是主线程 SwiftUI body）上跑钥匙串 / Process。
-    /// - `forceRefresh: true`：同步探测（调用方必须已在后台队列，如 AuthSettingsView）。
-    static func credentialsAvailable(forceRefresh: Bool = false) -> Bool {
+    /// - `forceRefresh: true`：同步探测（调用方必须已在后台队列）。
+    /// - `allowInteractiveKeychain`：仅显式用户操作（如设置页「重新检查」）为 true；可走可能弹窗的 security CLI。
+    static func credentialsAvailable(forceRefresh: Bool = false, allowInteractiveKeychain: Bool = false) -> Bool {
         if forceRefresh {
             assert(!Thread.isMainThread, "Antigravity credentialsAvailable(forceRefresh:) must not run on the main thread")
-            return refreshCredentialsCacheSync()
+            return refreshCredentialsCacheSync(allowInteractiveKeychain: allowInteractiveKeychain)
         }
 
         credentialsCacheLock.lock()
@@ -103,8 +107,9 @@ class AntigravityAPIService: UsageProvider {
     }
 
     @discardableResult
-    private static func refreshCredentialsCacheSync() -> Bool {
-        let available = resolveAccessToken() != nil
+    private static func refreshCredentialsCacheSync(allowInteractiveKeychain: Bool = false) -> Bool {
+        // 后台刷新默认静默；仅 AuthSettings 等显式操作才允许可能弹窗的 CLI
+        let available = resolveAccessToken(allowInteractiveKeychain: allowInteractiveKeychain) != nil
         credentialsCacheLock.lock()
         credentialsCache = (available, Date())
         credentialsRefreshScheduled = false
@@ -132,7 +137,8 @@ class AntigravityAPIService: UsageProvider {
         // 钥匙串读取可能阻塞，绝不在主线程跑
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             guard let self else { return }
-            guard let token = Self.resolveAccessToken() else {
+            // 用量拉取是自动路径：宁可无凭证，也不弹钥匙串
+            guard let token = Self.resolveAccessToken(allowInteractiveKeychain: false) else {
                 Self.markCredentialsUnavailable()
                 DispatchQueue.main.async { completion(.failure(UsageError.noCredentials)) }
                 return
@@ -149,50 +155,95 @@ class AntigravityAPIService: UsageProvider {
     // MARK: - Token Resolution
 
     /// 依次从以下途径解析有效的 Access Token：
-    /// 1. 本地 OAuth 文件（~/.gemini/oauth_creds.json）— 最快，不弹钥匙串权限
-    /// 2. macOS 钥匙串（Service: "gemini", Account: "antigravity"）
-    static func resolveAccessToken() -> String? {
+    /// 1. 本地 OAuth 文件（~/.gemini/oauth_creds.json）— 最快，不弹钥匙串
+    /// 2. SecItem 静默读取（kSecUseAuthenticationUIFail，绝不弹窗）
+    /// 3. 仅当 `allowInteractiveKeychain == true`（设置页强制刷新等）且未处于拒绝冷却时，才回退 `/usr/bin/security`（可能弹窗）
+    static func resolveAccessToken(allowInteractiveKeychain: Bool = false) -> String? {
         if let tokenFromFile = readTokenFromLocalFile() {
             return tokenFromFile
         }
-        if let tokenFromKeychain = readTokenFromKeychain() {
-            return tokenFromKeychain
+
+        switch readTokenFromKeychainSecItemSilent() {
+        case .token(let token):
+            return token
+        case .unavailable, .needsInteraction:
+            break
         }
+
+        // 自动/后台路径到此结束：宁可当作无凭证，也不弹钥匙串对话框
+        guard allowInteractiveKeychain else { return nil }
+        guard !isInteractiveKeychainBlocked() else {
+            Logger.api.debug("Antigravity 钥匙串交互已被拒绝/需授权，冷却期内跳过 security CLI")
+            return nil
+        }
+
+        if let viaCLI = readTokenFromKeychainSecurityCLI() {
+            return viaCLI
+        }
+        // CLI 失败（含用户点「不允许」、条目不存在等）→ 进入长冷却，避免短时间反复弹窗
+        markInteractiveKeychainBlocked()
         return nil
     }
 
-    private static func readTokenFromKeychain() -> String? {
-        // 沙盒内 SecItem 往往读不到 Gemini/Antigravity 写入的通用密码；先试 API，再回退 CLI。
-        // 调用方必须保证不在主线程（credentialsAvailable 默认路径 / fetchUsage 已避开）。
-        if let viaSecItem = readTokenFromKeychainSecItem() {
-            return viaSecItem
-        }
-        return readTokenFromKeychainSecurityCLI()
+    private enum SilentKeychainResult {
+        case token(String)
+        case unavailable
+        case needsInteraction
     }
 
-    private static func readTokenFromKeychainSecItem() -> String? {
+    /// 静默读钥匙串：失败时不弹 UI。沙盒下常读不到 Gemini 写入的条目，属预期。
+    private static func readTokenFromKeychainSecItemSilent() -> SilentKeychainResult {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: "gemini",
             kSecAttrAccount as String: "antigravity",
             kSecReturnData as String: true,
-            kSecMatchLimit as String: kSecMatchLimitOne
+            kSecMatchLimit as String: kSecMatchLimitOne,
+            // 需要用户授权时直接失败，绝不弹出「想要访问钥匙串」对话框
+            kSecUseAuthenticationUI as String: kSecUseAuthenticationUIFail
         ]
         var result: AnyObject?
         let status = SecItemCopyMatching(query as CFDictionary, &result)
-        guard status == errSecSuccess,
-              let data = result as? Data,
-              let raw = String(data: data, encoding: .utf8)?
+
+        if status == errSecSuccess,
+           let data = result as? Data,
+           let raw = String(data: data, encoding: .utf8)?
                 .trimmingCharacters(in: .whitespacesAndNewlines),
-              !raw.isEmpty else {
-            if status != errSecSuccess && status != errSecItemNotFound {
-                Logger.api.debug("SecItemCopyMatching Antigravity 钥匙串失败: \(status)")
-            }
-            return nil
+           !raw.isEmpty,
+           let token = parseKeychainSecret(raw) {
+            return .token(token)
         }
-        return parseKeychainSecret(raw)
+
+        // 需要 UI / 认证失败：静默路径到此为止；不在这里记冷却，
+        // 以便设置页 forceRefresh 仍可走一次 security CLI（用户显式操作）。
+        if status == errSecInteractionNotAllowed
+            || status == errSecAuthFailed
+            || status == errSecUserCanceled {
+            Logger.api.debug("SecItem 静默读 Antigravity 钥匙串需交互或已拒绝: \(status)")
+            return .needsInteraction
+        }
+
+        if status != errSecSuccess && status != errSecItemNotFound {
+            Logger.api.debug("SecItemCopyMatching Antigravity 钥匙串失败: \(status)")
+        }
+        return .unavailable
     }
 
+    private static func isInteractiveKeychainBlocked() -> Bool {
+        credentialsCacheLock.lock()
+        defer { credentialsCacheLock.unlock() }
+        guard let until = interactiveKeychainBlockedUntil else { return false }
+        return Date() < until
+    }
+
+    private static func markInteractiveKeychainBlocked() {
+        credentialsCacheLock.lock()
+        interactiveKeychainBlockedUntil = Date().addingTimeInterval(interactiveKeychainBlockTTL)
+        credentialsCacheLock.unlock()
+        Logger.api.debug("Antigravity 钥匙串交互路径已冷却 \(Int(Self.interactiveKeychainBlockTTL)) 秒")
+    }
+
+    /// 仅显式用户操作可调用；`security find-generic-password -w` 可能弹出钥匙串授权框。
     private static func readTokenFromKeychainSecurityCLI() -> String? {
         let task = Process()
         task.executableURL = URL(fileURLWithPath: "/usr/bin/security")

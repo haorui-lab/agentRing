@@ -72,10 +72,11 @@ struct AuthSettingsView: View {
             Text(L.Account.deleteConfirmMessage)
         }
         .onAppear {
-            refreshAntigravityCredentialStatus()
+            // 进入设置页：同步静默探测（不弹窗）
+            refreshAntigravityCredentialStatus(allowInteractiveKeychain: false)
         }
         .onChange(of: settings.antigravityEnabled) { _ in
-            refreshAntigravityCredentialStatus()
+            refreshAntigravityCredentialStatus(allowInteractiveKeychain: false)
         }
         .onChange(of: selectedProvider) { _ in
             isShowingToken = false
@@ -291,7 +292,7 @@ struct AuthSettingsView: View {
                         .foregroundColor(.secondary)
                     Spacer()
                     Button(L.Account.antigravityRecheck) {
-                        refreshAntigravityCredentialStatus(force: true)
+                        refreshAntigravityCredentialStatus(allowInteractiveKeychain: true)
                         NotificationCenter.default.post(
                             name: .accountChanged,
                             object: nil,
@@ -332,11 +333,14 @@ struct AuthSettingsView: View {
 
     // MARK: - Helpers
 
-    private func refreshAntigravityCredentialStatus(force: Bool = true) {
+    private func refreshAntigravityCredentialStatus(allowInteractiveKeychain: Bool = false) {
         isRecheckingAntigravity = true
         DispatchQueue.global(qos: .userInitiated).async {
-            // 强制同步探测（后台队列）；credentialsAvailable(forceRefresh:) 会更新 Published 缓存
-            let present = AntigravityAPIService.credentialsAvailable(forceRefresh: force)
+            // 始终同步刷新缓存；仅「重新检查」允许可能弹窗的 security CLI
+            let present = AntigravityAPIService.credentialsAvailable(
+                forceRefresh: true,
+                allowInteractiveKeychain: allowInteractiveKeychain
+            )
             DispatchQueue.main.async {
                 settings.applyAntigravityCredentialsPresent(present)
                 isRecheckingAntigravity = false

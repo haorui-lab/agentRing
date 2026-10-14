@@ -70,7 +70,7 @@ final class AntigravityDiagnosticRunner: DiagnosticRunner {
     private func resolveTokenOffMainThread() async -> String? {
         await withCheckedContinuation { continuation in
             DispatchQueue.global(qos: .userInitiated).async {
-                continuation.resume(returning: AntigravityAPIService.resolveAccessToken())
+                continuation.resume(returning: AntigravityAPIService.resolveAccessToken(allowInteractiveKeychain: true))
             }
         }
     }
