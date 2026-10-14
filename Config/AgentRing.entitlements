@@ -28,5 +28,14 @@
 	<array>
 		<string>/Library/Containers/app.agentsring.AgentsRing/</string>
 	</array>
+	<!--
+	  Antigravity / Gemini CLI 把 oauth 写在真实用户主目录 ~/.gemini/。
+	  App Sandbox 下 ~ 会落到容器，且无例外时无法读写真实主目录该路径。
+	  需要读写：读 access/refresh，以及 refresh 成功后写回更新后的 access_token。
+	-->
+	<key>com.apple.security.temporary-exception.files.home-relative-path.read-write</key>
+	<array>
+		<string>/.gemini/</string>
+	</array>
 </dict>
 </plist>

@@ -292,12 +292,16 @@ struct AuthSettingsView: View {
                         .foregroundColor(.secondary)
                     Spacer()
                     Button(L.Account.antigravityRecheck) {
-                        refreshAntigravityCredentialStatus(allowInteractiveKeychain: true)
-                        NotificationCenter.default.post(
-                            name: .accountChanged,
-                            object: nil,
-                            userInfo: [Notification.UserInfoKey.provider: ProviderType.antigravity.rawValue]
-                        )
+                        // 必须等交互式钥匙串同步完成后再发 accountChanged。
+                        // 若立刻 post，fetchUsage 会走静默路径继续用错账号 → 403「会话过期」。
+                        refreshAntigravityCredentialStatus(allowInteractiveKeychain: true) { present in
+                            guard present else { return }
+                            NotificationCenter.default.post(
+                                name: .accountChanged,
+                                object: nil,
+                                userInfo: [Notification.UserInfoKey.provider: ProviderType.antigravity.rawValue]
+                            )
+                        }
                     }
                     .buttonStyle(.bordered)
                     .controlSize(.small)
@@ -333,7 +337,10 @@ struct AuthSettingsView: View {
 
     // MARK: - Helpers
 
-    private func refreshAntigravityCredentialStatus(allowInteractiveKeychain: Bool = false) {
+    private func refreshAntigravityCredentialStatus(
+        allowInteractiveKeychain: Bool = false,
+        completion: ((Bool) -> Void)? = nil
+    ) {
         isRecheckingAntigravity = true
         DispatchQueue.global(qos: .userInitiated).async {
             // 始终同步刷新缓存；仅「重新检查」允许可能弹窗的 security CLI
@@ -344,6 +351,7 @@ struct AuthSettingsView: View {
             DispatchQueue.main.async {
                 settings.applyAntigravityCredentialsPresent(present)
                 isRecheckingAntigravity = false
+                completion?(present)
             }
         }
     }

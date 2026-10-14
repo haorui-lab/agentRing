@@ -58,9 +58,9 @@ AgentRing 要显示 Antigravity / Gemini 用量，必须先拿到访问令牌。
 
 | 项目 | 改之前 | 改之后 |
 |------|--------|--------|
-| **后台刷新**（约每 2 分钟） | 文件失败 → SecItem → 再跑 `security` CLI → **弹窗** | 只走：oauth 文件 + **静默** SecItem；失败就当「没有凭证」，**绝不弹窗** |
-| **SecItem 读钥匙串** | 可能弹出系统授权 UI | 加上 `kSecUseAuthenticationUIFail`：需要用户点授权时**直接失败、不弹任何 UI** |
-| **`security` 命令行** | 自动路径失败就会跑（进设置、开关监控、后台刷新都可能触发） | **只有**用户在设置里点 **「重新检查」**，或跑诊断探测时，才允许可能弹窗的路径；进入设置页 / 拨开关 / 自动刷新 → **静默，不跑 CLI** |
+| **后台刷新**（约每 2 分钟） | 文件失败 → SecItem → 再跑 `security` CLI → **弹窗** | **只读 oauth 文件**；失败即「无凭证」。**绝不**碰钥匙串（SecItem / CLI 都不走） |
+| **SecItem 读钥匙串** | 可能弹出系统授权 UI | v0.1.16 曾以为 `kSecUseAuthenticationUIFail` 够静默；对 go-keyring 的 **login 文件钥匙串** ACL **仍会弹「输入登录密码」**。现仅显式「重新检查」/诊断才调用，并辅以 `SecKeychainSetUserInteractionAllowed(false)` |
+| **`security` 命令行** | 自动路径失败就会跑（进设置、开关监控、后台刷新都可能触发） | **只有**用户点 **「重新检查」** 或跑诊断才允许；进入设置页 / 拨开关 / 自动刷新 → **不跑 CLI、不跑 SecItem** |
 | **用户点了「不允许」之后** | 过一会儿后台又弹 | 约 **60 秒** 冷却（仅挡显式「重新检查」/诊断的 CLI）；后台本来就不走 CLI。条目不存在（exit 44 = `-25300 & 0xFF`）**不**冷却 |
 | **刻意没动** | — | **不** reset TCC、不跑 `tccutil`；**不删、不改** 用户钥匙串里的 `gemini` / `antigravity` 条目 |
 
@@ -99,6 +99,52 @@ AgentRing 要显示 Antigravity / Gemini 用量，必须先拿到访问令牌。
 2. 冷却 24h → **60 秒**（只影响显式交互路径；无 UI 提示，不宜更长）。
 3. CLI 读成功时清除冷却。
 4. notFound 判定只比 exit 44，删掉永远命不中的 `errSecItemNotFound` 比较。
+
+### 回归：v0.1.16 仍弹窗 → 补丁（未发版；对照近史）
+
+**现象**：正式包 0.1.16 仍频繁弹出「登录钥匙串密码 / gemini」。
+
+**不要和这些提交搞混（它们管的是 AgentRing 自己的 Codex/Cursor 凭据，不碰 gemini）：**
+- `c72584d` Data Protection 钥匙串
+- `f883903` DP 写入降级
+- `17c175d` AES-GCM 文件存储替代自家钥匙串
+
+**真正相邻根因：`985b640`（never read Antigravity keychain on SwiftUI main thread）**
+| 应保留 | 误引入 / 放大 |
+|--------|----------------|
+| Published 缓存，主线程不跑 `Process` | **新增** `SecItemCopyMatching`（此前只有 CLI） |
+| AuthSettings 后台 forceRefresh | `warmCredentialsCache` + 120s 过期 → **后台周期性**打钥匙串 |
+
+`9eba3fa`/`f79289e` 只把 CLI 收到显式操作，**自动路径仍 SecItem** → 密码框继续弹。
+
+**修复（贴历史，不盲目加料）：**
+- 自动路径：只读 oauth 文件；**access 过期时用同文件 `refresh_token` 调 Google token 端点续期并写回**（不碰钥匙串）
+- 显式「重新检查」/诊断：只走 `security` CLI（回到 985b640 **之前**的钥匙串读法）
+- **删除**对 gemini 的 SecItem 路径（含 Fail 旗标 / `SecKeychainSetUserInteractionAllowed` 兜底）
+- 保留 985b640 的主线程安全架构
+
+**实测反馈（人类）：** 去掉 SecItem 后「不弹了」，但用量空白——因 `~/.gemini/oauth_creds.json` 的 access_token 已过期，有效令牌只在钥匙串。补上 refresh 后续期后，自动路径应能重新展示用量。
+
+**沙盒补丁（审查指出 + 实测纠正）：**
+1. 禁止再用 `expandingTildeInPath`：沙盒下 `~` = 容器。
+2. 实测：`NSHomeDirectoryForUser` 在本 App 沙盒里**同样**返回容器路径，不够。改用 POSIX `getpwuid(getuid())->pw_dir` 取真实 login home。
+3. `Config/AgentRing.entitlements` 增加 `home-relative-path.read-write` → `/.gemini/`。这也解释了为何旧代码「优先 oauth 文件」在沙盒里几乎总是落空、只能去弹钥匙串。
+
+**账号错位（审查指出 + 本机核实）：**
+- oauth 文件账号 `zgsdharry.ai@gmail.com` → Quota **403**
+- 钥匙串 `gemini/antigravity` 账号 `zgsdharry@gmail.com` → Quota **200**
+- 修复：显式「重新检查」**优先**走 CLI；成功后把钥匙串 token/refresh/id_token/expiry 同步写回 oauth 文件；之后自动路径 refresh 才续到正确账号。
+
+**人类反馈「仍无法显示 / 会话已过期」跟进：**
+1. 「重新检查」曾立刻 `post(accountChanged)`，与交互式 CLI **竞态**：静默 `fetchUsage` 先用错账号 → 403 → 会话过期 UI；且 oauth 从未被同步（面包屑无 `keychain_cli_ok`）。
+2. 修复：等交互式探测成功后再 `accountChanged`。
+3. Quota 401/403 后 **隔离** oauth 文件，自动路径不再读它，直到钥匙串同步成功。
+
+**第五层：OAuth Client ID 错配（审查面包屑 + 本机实测）：**
+- 面包屑循环：`access_expired` → `refresh_response_invalid`
+- 文件 `id_token` 的 azp/aud、agy 二进制内嵌均为 `1071006060591-…apps.googleusercontent.com`
+- 代码曾硬编码 Gemini CLI 的 `681255809395-…` → Google refresh 返回 **401 unauthorized_client**
+- 改用 Antigravity 客户端后 refresh **HTTP 200**；已替换 `geminiOAuthClientID` / `Secret`
 
 ---
 
