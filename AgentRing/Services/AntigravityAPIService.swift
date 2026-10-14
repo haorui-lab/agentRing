@@ -24,9 +24,10 @@ class AntigravityAPIService: UsageProvider {
     private static var credentialsCache: (available: Bool, checkedAt: Date)?
     private static let credentialsCacheTTL: TimeInterval = 120
     private static var credentialsRefreshScheduled = false
-    /// 用户点「不允许」或钥匙串要求交互后，长时间内禁止再走会弹窗的路径
+    /// 用户点「不允许」等交互失败后，短时间内禁止再走会弹窗的 CLI（仅影响显式「重新检查」/诊断）
     private static var interactiveKeychainBlockedUntil: Date?
-    private static let interactiveKeychainBlockTTL: TimeInterval = 24 * 60 * 60
+    /// 后台从不走 CLI；冷却只挡显式操作。无倒计时 UI，60 秒够防连点，更长会让用户以为「重新检查」坏了。
+    private static let interactiveKeychainBlockTTL: TimeInterval = 60
 
     init() {
         let configuration = URLSessionConfiguration.default
@@ -177,18 +178,31 @@ class AntigravityAPIService: UsageProvider {
             return nil
         }
 
-        if let viaCLI = readTokenFromKeychainSecurityCLI() {
-            return viaCLI
+        switch readTokenFromKeychainSecurityCLI() {
+        case .token(let token):
+            clearInteractiveKeychainBlock()
+            return token
+        case .notFound:
+            // 条目不存在通常不再次弹授权框；不冷却，便于用户登录 Gemini 后立刻「重新检查」
+            Logger.api.debug("security CLI：Antigravity 钥匙串条目不存在")
+            return nil
+        case .deniedOrFailed:
+            // 用户点「不允许」或其它交互/权限失败 → 短冷却，避免连点狂弹
+            markInteractiveKeychainBlocked()
+            return nil
         }
-        // CLI 失败（含用户点「不允许」、条目不存在等）→ 进入长冷却，避免短时间反复弹窗
-        markInteractiveKeychainBlocked()
-        return nil
     }
 
     private enum SilentKeychainResult {
         case token(String)
         case unavailable
         case needsInteraction
+    }
+
+    private enum CLIKeychainResult {
+        case token(String)
+        case notFound
+        case deniedOrFailed
     }
 
     /// 静默读钥匙串：失败时不弹 UI。沙盒下常读不到 Gemini 写入的条目，属预期。
@@ -243,8 +257,20 @@ class AntigravityAPIService: UsageProvider {
         Logger.api.debug("Antigravity 钥匙串交互路径已冷却 \(Int(Self.interactiveKeychainBlockTTL)) 秒")
     }
 
+    private static func clearInteractiveKeychainBlock() {
+        credentialsCacheLock.lock()
+        interactiveKeychainBlockedUntil = nil
+        credentialsCacheLock.unlock()
+    }
+
+    /// `security` 找不到条目时退出码为 44：即 `errSecItemNotFound`（-25300）经进程退出状态低 8 位截断（`-25300 & 0xFF == 44`）。
+    /// `Process.terminationStatus` 只有 0…255，不可能等于原始 OSStatus -25300，故只比 44。
+    private static func isKeychainItemNotFoundStatus(_ status: Int32) -> Bool {
+        status == 44
+    }
+
     /// 仅显式用户操作可调用；`security find-generic-password -w` 可能弹出钥匙串授权框。
-    private static func readTokenFromKeychainSecurityCLI() -> String? {
+    private static func readTokenFromKeychainSecurityCLI() -> CLIKeychainResult {
         let task = Process()
         task.executableURL = URL(fileURLWithPath: "/usr/bin/security")
         task.arguments = ["find-generic-password", "-s", "gemini", "-a", "antigravity", "-w"]
@@ -255,15 +281,25 @@ class AntigravityAPIService: UsageProvider {
         do {
             try task.run()
             task.waitUntilExit()
-            guard task.terminationStatus == 0 else { return nil }
-            let data = pipe.fileHandleForReading.readDataToEndOfFile()
-            guard let rawOutput = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) else {
-                return nil
+            let status = task.terminationStatus
+            if status != 0 {
+                if isKeychainItemNotFoundStatus(status) {
+                    return .notFound
+                }
+                Logger.api.debug("security CLI 读取 Antigravity 钥匙串失败，exit=\(status)")
+                return .deniedOrFailed
             }
-            return parseKeychainSecret(rawOutput)
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            guard let rawOutput = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  let token = parseKeychainSecret(rawOutput) else {
+                // 进程成功但内容不可用：不当作用户拒绝，避免误冷却
+                return .notFound
+            }
+            return .token(token)
         } catch {
             Logger.api.debug("通过 security CLI 读取 Antigravity 钥匙串失败: \(error.localizedDescription)")
-            return nil
+            // 无法启动 Process 不等于用户拒绝
+            return .notFound
         }
     }
 

@@ -3,7 +3,7 @@
 给其他 Coding Agent / 审阅者。只谈 **Antigravity（Gemini）凭证读取** 相关改动，不含 Cursor / X Subscription 用量展示。
 
 本地分支：`fix/antigravity-keychain-no-prompt`（基于 main / v0.1.15）  
-相关提交：`30e23f9`（含本简报；**先别 push**）
+相关提交：`9eba3fa` + 本轮未提交优化（**先别 push**）
 
 ---
 
@@ -61,14 +61,14 @@ AgentRing 要显示 Antigravity / Gemini 用量，必须先拿到访问令牌。
 | **后台刷新**（约每 2 分钟） | 文件失败 → SecItem → 再跑 `security` CLI → **弹窗** | 只走：oauth 文件 + **静默** SecItem；失败就当「没有凭证」，**绝不弹窗** |
 | **SecItem 读钥匙串** | 可能弹出系统授权 UI | 加上 `kSecUseAuthenticationUIFail`：需要用户点授权时**直接失败、不弹任何 UI** |
 | **`security` 命令行** | 自动路径失败就会跑（进设置、开关监控、后台刷新都可能触发） | **只有**用户在设置里点 **「重新检查」**，或跑诊断探测时，才允许可能弹窗的路径；进入设置页 / 拨开关 / 自动刷新 → **静默，不跑 CLI** |
-| **用户点了「不允许」之后** | 过一会儿后台又弹 | 约 **24 小时** 冷却：冷却期内连「重新检查」也不再走 CLI，避免连点狂弹 |
+| **用户点了「不允许」之后** | 过一会儿后台又弹 | 约 **60 秒** 冷却（仅挡显式「重新检查」/诊断的 CLI）；后台本来就不走 CLI。条目不存在（exit 44 = `-25300 & 0xFF`）**不**冷却 |
 | **刻意没动** | — | **不** reset TCC、不跑 `tccutil`；**不删、不改** 用户钥匙串里的 `gemini` / `antigravity` 条目 |
 
 行为不变的情况：oauth 文件有效，或 SecItem 已能静默读到 → 仍正常拿用量，不会多弹窗。
 
 ### 主要改动文件
 
-- `AgentRing/Services/AntigravityAPIService.swift` — 静默 / 交互分流 + 24h 冷却
+- `AgentRing/Services/AntigravityAPIService.swift` — 静默 / 交互分流 + 60s 交互冷却
 - `AgentRing/Views/Settings/Tabs/AuthSettingsView.swift` — 仅「重新检查」打开可弹窗路径
 - `AgentRing/Helpers/AntigravityDiagnosticRunner.swift` — 诊断可 interactive
 
@@ -80,7 +80,7 @@ AgentRing 要显示 Antigravity / Gemini 用量，必须先拿到访问令牌。
 2. 打开 App，静置几分钟（超过原 ~120s 刷新周期）。  
    → **预期：后台不再自动弹 gemini 钥匙串对话框。**
 3. 打开设置 → Antigravity：仅进入页面不应弹窗；点一次「重新检查」最多弹一次。
-4. 若点「不允许」：之后短时间后台与再次「重新检查」都不应连弹（24h 冷却）。
+4. 若点「不允许」：后台仍不弹；约 60 秒内再点「重新检查」应跳过 CLI（不连弹）；冷却过后或重启 App 后可再试。
 5. 若 `~/.gemini/oauth_creds.json` 有效：Antigravity 用量应仍正常。
 
 ---
@@ -88,8 +88,17 @@ AgentRing 要显示 Antigravity / Gemini 用量，必须先拿到访问令牌。
 ## 5. 风险与后续
 
 - 沙盒下 SecItem 本来就经常读不到 Gemini 写入的通用密码；禁用自动 CLI 后，**只有钥匙串、没有有效 oauth 文件** 的用户，后台会显示「无凭证」，需要打开 Antigravity/Gemini 刷新 oauth，或点「重新检查」并点允许。
-- 冷却是进程内状态，重启 App 会清空；若要跨启动持久化，可再议。
+- 冷却是进程内状态，重启 App 会清空；后台已不走 CLI，一般**不必**跨启动持久化。冷却期内 UI 无倒计时提示，故时长必须短（现 60s），避免用户误以为功能坏了。
+- 「条目不存在」靠 `security` 退出码 **44**（`-25300 & 0xFF`）判定；`terminationStatus` 不会等于原始 `-25300`。若某版本「拒绝」也返回 44，可能少冷却一次（可再点一次，可接受）。
+- 诊断面板同样尊重冷却：刚拒绝后立刻跑诊断会跳过 CLI；这也要求冷却不能太长。
 - 未做自动化 UI 测试覆盖钥匙串弹窗（需要真机 Keychain ACL）。
+
+### 相对 `9eba3fa` 的优化（含审查反馈）
+
+1. CLI 结果三分：`token` / `notFound` / `deniedOrFailed`；**仅拒绝类失败**才冷却。
+2. 冷却 24h → **60 秒**（只影响显式交互路径；无 UI 提示，不宜更长）。
+3. CLI 读成功时清除冷却。
+4. notFound 判定只比 exit 44，删掉永远命不中的 `errSecItemNotFound` 比较。
 
 ---
 
