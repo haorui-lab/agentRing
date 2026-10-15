@@ -161,6 +161,7 @@ struct CursorUsageMapperChecks {
         expect(usage.secondary == nil, "dashboard X weekly premium has no apiPercent secondary")
         expect(usage.onDemand == nil, "dashboard sample has no on-demand")
         expect(usage.presentation.billingMode == .xSubscription, "dashboard merged+weekly → xSubscription")
+        expect(usage.fetchSource == .dashboard, "dashboard period+plan-info tags fetchSource")
         expect(usage.presentation.cadence == .weekly, "INCLUDED_USAGE_PERIOD_WEEKLY → weekly")
         expect(usage.presentation.membershipDisplayName == "Premium", "dashboard planName Premium")
         expect(
