@@ -1,12 +1,5 @@
 import Foundation
 
-// Behavioral checks for UsageResetDetector.
-// Usage: Scripts/test-usage-reset-detection.sh
-//
-// Repro (user report): Cursor "用量已重置" twice while ring/percentage unchanged.
-// Cause under test: resetsAt source oscillation + tiny pct noise, checked for
-// both included and on-demand pools in one refresh.
-
 @main
 struct UsageResetDetectionChecks {
     static func main() {
@@ -32,7 +25,6 @@ struct UsageResetDetectionChecks {
         }
     }
 
-    /// Dashboard weekly end → usage-summary monthly end, ring barely moved.
     static func checkSourceSwitchDoesNotReset() {
         let weeklyEnd = Date(timeIntervalSince1970: 1_792_483_310)
         let monthlyEnd = weeklyEnd.addingTimeInterval(20 * 86_400)
@@ -56,7 +48,6 @@ struct UsageResetDetectionChecks {
         check(!reset, "2s resetsAt jitter with 0.1pt drop is not a reset")
     }
 
-    /// One refresh checks included + onDemand; both must stay quiet when ring is flat.
     static func checkDualPoolFalsePositiveDoesNotFireTwice() {
         let weeklyEnd = Date(timeIntervalSince1970: 1_792_483_310)
         let monthlyEnd = weeklyEnd.addingTimeInterval(20 * 86_400)
