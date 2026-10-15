@@ -18,6 +18,8 @@ struct CursorUsageData: Sendable {
     let billingCycleEnd: Date?
     /// View-facing labels and cadence; built at the API boundary.
     let presentation: CursorPresentation
+    /// Dashboard vs usage-summary (or debug). Used to skip cross-source notifications.
+    let fetchSource: CursorUsageFetchSource
 
     struct LimitData: Sendable {
         let percentage: Double
@@ -282,7 +284,8 @@ enum CursorUsageMapper {
             onDemand: onDemand,
             membershipType: response.membershipType,
             billingCycleEnd: cycleEnd,
-            presentation: presentation
+            presentation: presentation,
+            fetchSource: .usageSummary
         )
     }
 
@@ -478,7 +481,8 @@ enum CursorUsageMapper {
             onDemand: onDemand,
             membershipType: planInfo?.planName,
             billingCycleEnd: cycleEnd,
-            presentation: presentation
+            presentation: presentation,
+            fetchSource: .dashboard
         )
     }
 
