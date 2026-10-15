@@ -10,9 +10,8 @@ import OSLog
 final class NotificationManager {
     static let shared = NotificationManager()
 
-    private let warningThreshold: Double = 90
+    private let warningThreshold: Double = UsageResetDetector.warningThreshold
     private let secondaryEarlyWarningThreshold: Double = 75
-    private let resetDropThreshold: Double = 30
     private var notifiedWarnings: [String: Bool] = [:]
 
     private init() {}
@@ -138,17 +137,12 @@ final class NotificationManager {
         currentResetsAt: Date?,
         previousResetsAt: Date?
     ) -> Bool {
-        if previousPct >= warningThreshold && (previousPct - currentPct) > resetDropThreshold {
-            return true
-        }
-
-        if let currentResetsAt, let previousResetsAt,
-           abs(currentResetsAt.timeIntervalSince(previousResetsAt)) > 1,
-           currentPct < previousPct {
-            return true
-        }
-
-        return false
+        UsageResetDetector.isReset(
+            currentPct: currentPct,
+            previousPct: previousPct,
+            currentResetsAt: currentResetsAt,
+            previousResetsAt: previousResetsAt
+        )
     }
 
     private func sendUsageWarning(limitType: LimitType, percentage: Double) {
