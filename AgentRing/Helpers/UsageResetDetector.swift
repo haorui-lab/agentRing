@@ -11,9 +11,7 @@ import Foundation
 enum UsageResetDetector {
     static let warningThreshold: Double = 90
     static let resetDropThreshold: Double = 30
-    /// Real cycle rollover moves the end date forward by hours or days.
-    /// Sub-second parse jitter and source switches that move the date
-    /// backward or sideways must not count.
+    /// A real cycle moves the end forward by hours or days. Date noise under an hour does not.
     static let resetDateAdvanceThreshold: TimeInterval = 3600
 
     /// Decide whether a refresh looks like a quota reset for one limit pool.
