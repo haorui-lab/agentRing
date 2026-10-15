@@ -60,5 +60,8 @@ jobs:
       - name: Validate Cursor usage mapper presentation
         run: bash Scripts/test-cursor-usage-mapper.sh
 
+      - name: Validate usage reset detection
+        run: bash Scripts/test-usage-reset-detection.sh
+
       - name: Validate Sparkle delegate integration
         run: bash Scripts/test-update-manager.sh "$RUNNER_TEMP/SourcePackages/artifacts/sparkle/Sparkle"
