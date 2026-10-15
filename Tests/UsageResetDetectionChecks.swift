@@ -12,6 +12,8 @@ struct UsageResetDetectionChecks {
         checkRealCycleRolloverResets()
         checkHighWatermarkCollapseResets()
         checkTinyDropWithoutDateChangeDoesNotReset()
+        checkCrossFetchSourceBlocksComparison()
+        checkSameFetchSourceAllowsComparison()
         print("All usage reset detection checks passed.")
     }
 
@@ -161,5 +163,31 @@ struct UsageResetDetectionChecks {
             now: now
         )
         check(!reset, "same resetsAt with 1pt drop is not a reset")
+    }
+
+    static func checkCrossFetchSourceBlocksComparison() {
+        let allowed = CursorUsageNotificationPolicy.allowsComparison(
+            current: .usageSummary,
+            previous: .dashboard
+        )
+        check(!allowed, "dashboard→usage-summary must not compare for notifications")
+        let reverse = CursorUsageNotificationPolicy.allowsComparison(
+            current: .dashboard,
+            previous: .usageSummary
+        )
+        check(!reverse, "usage-summary→dashboard must not compare for notifications")
+    }
+
+    static func checkSameFetchSourceAllowsComparison() {
+        let first = CursorUsageNotificationPolicy.allowsComparison(
+            current: .dashboard,
+            previous: nil
+        )
+        let same = CursorUsageNotificationPolicy.allowsComparison(
+            current: .dashboard,
+            previous: .dashboard
+        )
+        check(first, "first sample with no previous still allows comparison")
+        check(same, "same fetch source allows comparison")
     }
 }

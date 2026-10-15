@@ -289,7 +289,8 @@ class CursorAPIService: UsageProvider {
                 secondaryKind: .apiModels,
                 onDemandLabelKey: onDemandPool != nil ? CursorPresentationBuilder.LabelKey.onDemandSpend : nil,
                 billingMode: .legacyCursor
-            )
+            ),
+            fetchSource: .debugMock
         )
     }
     #endif

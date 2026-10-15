@@ -1,5 +1,21 @@
 import Foundation
 
+enum CursorUsageFetchSource: String, Sendable, Equatable {
+    case dashboard
+    case usageSummary
+    case debugMock
+}
+
+enum CursorUsageNotificationPolicy {
+    static func allowsComparison(
+        current: CursorUsageFetchSource,
+        previous: CursorUsageFetchSource?
+    ) -> Bool {
+        guard let previous else { return true }
+        return current == previous
+    }
+}
+
 enum UsageResetDetector {
     static let warningThreshold: Double = 90
     static let resetDropThreshold: Double = 30

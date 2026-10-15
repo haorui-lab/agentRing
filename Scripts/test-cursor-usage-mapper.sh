@@ -6,6 +6,7 @@ export DEVELOPER_DIR="${DEVELOPER_DIR:-/Applications/Xcode.app/Contents/Develope
 OUT="/tmp/agentring-cursor-usage-mapper-checks"
 swiftc -swift-version 5 \
     AgentRing/Helpers/LoggerExtension.swift \
+    AgentRing/Helpers/UsageResetDetector.swift \
     AgentRing/Models/CursorUsageData.swift \
     AgentRing/Models/CursorPresentation.swift \
     Tests/CursorUsageMapperChecks.swift \

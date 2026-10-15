@@ -50,6 +50,13 @@ final class NotificationManager {
     }
 
     func checkAndNotify(cursorUsageData: CursorUsageData, previousData: CursorUsageData?) {
+        guard CursorUsageNotificationPolicy.allowsComparison(
+            current: cursorUsageData.fetchSource,
+            previous: previousData?.fetchSource
+        ) else {
+            return
+        }
+
         checkLimit(
             type: .cursorIncluded,
             current: cursorUsageData.included?.percentage,

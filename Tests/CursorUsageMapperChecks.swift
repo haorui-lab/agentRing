@@ -33,6 +33,7 @@ struct CursorUsageMapperChecks {
         expect(usage.onDemand != nil, "legacy onDemand present")
         expect(abs((usage.onDemand?.percentage ?? -1) - 30.0) < 0.01, "legacy onDemand is 1500/5000 = 30%")
         expect(usage.presentation.billingMode == .legacyCursor, "legacy billingMode")
+        expect(usage.fetchSource == .usageSummary, "usage-summary fixture tags fetchSource")
         expect(
             usage.presentation.columnBrandKey == CursorPresentationBuilder.BrandKey.cursor,
             "legacy column brand key is provider.cursor"
