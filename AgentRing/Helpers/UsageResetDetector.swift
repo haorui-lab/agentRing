@@ -9,20 +9,35 @@ enum UsageResetDetector {
         currentPct: Double,
         previousPct: Double,
         currentResetsAt: Date?,
-        previousResetsAt: Date?
+        previousResetsAt: Date?,
+        now: Date = Date()
     ) -> Bool {
+        let previousWindowEnded = previousWindowHasEnded(
+            previousResetsAt: previousResetsAt,
+            now: now
+        )
+
         if previousPct >= warningThreshold && (previousPct - currentPct) > resetDropThreshold {
-            return true
+            return previousWindowEnded
         }
 
         if let currentResetsAt, let previousResetsAt {
             let advance = currentResetsAt.timeIntervalSince(previousResetsAt)
             if advance > resetDateAdvanceThreshold
+                && previousWindowEnded
                 && (previousPct - currentPct) > resetDropThreshold {
                 return true
             }
         }
 
         return false
+    }
+
+    static func previousWindowHasEnded(
+        previousResetsAt: Date?,
+        now: Date
+    ) -> Bool {
+        guard let previousResetsAt else { return true }
+        return previousResetsAt.timeIntervalSince(now) <= resetDateAdvanceThreshold
     }
 }
