@@ -104,9 +104,10 @@ final class BLESyncService: NSObject, ObservableObject {
             Logger.bluetooth.info("BLE 目标设备更改为: [\(trimmed.isEmpty ? "自动连接" : trimmed)]")
 
             // 若指定了目标设备，主动断开当前连接的非目标设备
+            // （与 didDiscover 目标过滤一致用模糊匹配，避免子串目标名误断已连上的正确设备）
             if !trimmed.isEmpty {
                 for session in self.sessions.values {
-                    if session.deviceName != trimmed {
+                    if !session.deviceName.localizedCaseInsensitiveContains(trimmed) {
                         Logger.bluetooth.notice("断开非目标设备: \(session.deviceName)")
                         self.centralManager?.cancelPeripheralConnection(session.peripheral)
                     }
@@ -204,8 +205,10 @@ final class BLESyncService: NSObject, ObservableObject {
         scanTimeoutWorkItem?.cancel()
         DispatchQueue.main.async { self.isScanning = true }
         Logger.bluetooth.info("开始扫描 BLE 副屏设备 (前缀: \(Self.deviceNamePrefix), 目标: \(self.targetDeviceName.isEmpty ? "全部" : self.targetDeviceName))")
-        // 使用 Service UUID 过滤，仅发现包含 Nordic UART Service 的设备，减少无关设备回调
-        centralManager?.scanForPeripherals(withServices: [Self.serviceUUID], options: [
+        // 不按 Service UUID 过滤：Android 副屏的 BLE 广播只带本地名称、不含
+        // 任何 Service UUID，按 UUID 过滤会导致其永远无法被发现（v0.1.13 回归）。
+        // 无关设备由 didDiscover 中的名称前缀守卫过滤。
+        centralManager?.scanForPeripherals(withServices: nil, options: [
             CBCentralManagerScanOptionAllowDuplicatesKey: false
         ])
 
@@ -321,9 +324,10 @@ extension BLESyncService: CBCentralManagerDelegate {
             }
         }
 
-        // 目标过滤：如果指定了设备名，则只连接匹配的设备
+        // 目标过滤：如果指定了设备名，则只连接名称包含目标的设备
+        // （模糊匹配：Android 广播名可能带后缀，如 AgentRing-NX513J 与用户填写的子串）
         if !targetDeviceName.isEmpty {
-            guard name == targetDeviceName else {
+            guard name.localizedCaseInsensitiveContains(targetDeviceName) else {
                 return
             }
         }
