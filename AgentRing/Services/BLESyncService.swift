@@ -92,6 +92,10 @@ final class BLESyncService: NSObject, ObservableObject {
     private var gattRejectCooldowns: [UUID: TimeInterval] = [:]
     private static let gattRejectCooldown: TimeInterval = 60
 
+    /// GATT 服务发现超时看门狗：didConnect 后若回调一直不来，不能干等占坑
+    private var gattDiscoveryTimeouts: [UUID: DispatchWorkItem] = [:]
+    private static let gattDiscoveryTimeout: TimeInterval = 6
+
     private let queue = DispatchQueue(label: "app.agentring.ble")
 
     // MARK: - 初始化
@@ -161,6 +165,10 @@ final class BLESyncService: NSObject, ObservableObject {
             self.isRunning = false
             self.scanTimeoutWorkItem?.cancel()
             self.scanTimeoutWorkItem = nil
+            for identifier in self.gattDiscoveryTimeouts.keys {
+                self.cancelGATTDiscoveryTimeout(identifier: identifier)
+            }
+            self.gattRejectCooldowns.removeAll()
             self.centralManager?.stopScan()
             for session in self.sessions.values {
                 self.centralManager?.cancelPeripheralConnection(session.peripheral)
@@ -271,7 +279,8 @@ final class BLESyncService: NSObject, ObservableObject {
         guard isRunning else { return }
 
         // 若当前未连接任何设备，且不在扫描中，则自动触发后台搜寻
-        if sessions.isEmpty && !isScanning && centralManager?.state == .poweredOn {
+        // （用 centralManager.isScanning 判断 CB 真相，@Published isScanning 经主线程异步易脏读）
+        if sessions.isEmpty && centralManager?.isScanning != true && centralManager?.state == .poweredOn {
             startScanning()
             return
         }
@@ -343,6 +352,8 @@ extension BLESyncService: CBCentralManagerDelegate {
         // （显式指定目标名的设备也遵守冷却，避免对无 GATT 设备死磕）
         if let rejectedAt = gattRejectCooldowns[uuid],
            Date().timeIntervalSince1970 - rejectedAt < Self.gattRejectCooldown {
+            let remaining = Int(Self.gattRejectCooldown - (Date().timeIntervalSince1970 - rejectedAt))
+            Logger.bluetooth.notice("BLE 设备 [\(name)] 处于误连冷却期（剩余 \(remaining)s），跳过自动连接")
             return
         }
         gattRejectCooldowns.removeValue(forKey: uuid)
@@ -363,6 +374,7 @@ extension BLESyncService: CBCentralManagerDelegate {
         // 无 GATT 设备（如 Android 经典副屏）。等 didDiscoverCharacteristicsFor
         // 找到可写特征后才更新 connectedDeviceName。
         stopScanning()
+        beginGATTDiscoveryTimeout(identifier: peripheral.identifier)
         peripheral.discoverServices([Self.serviceUUID])
     }
 
@@ -370,6 +382,7 @@ extension BLESyncService: CBCentralManagerDelegate {
         let name = peripheral.name ?? peripheral.identifier.uuidString
         Logger.bluetooth.warning("连接 BLE 副屏失败: \(name), error: \(String(describing: error))")
         sessions.removeValue(forKey: peripheral.identifier)
+        cancelGATTDiscoveryTimeout(identifier: peripheral.identifier)
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
             if let idx = self.discoveredDevices.firstIndex(where: { $0.id == peripheral.identifier || $0.name == name }) {
@@ -382,6 +395,7 @@ extension BLESyncService: CBCentralManagerDelegate {
         let name = peripheral.name ?? peripheral.identifier.uuidString
         Logger.bluetooth.notice("BLE 副屏已断开连接: \(name)")
         sessions.removeValue(forKey: peripheral.identifier)
+        cancelGATTDiscoveryTimeout(identifier: peripheral.identifier)
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
             if self.connectedDeviceName == name {
@@ -405,14 +419,14 @@ extension BLESyncService: CBPeripheralDelegate {
 
         // 服务发现失败：同一条拒绝路径，不能静默挂死
         if error != nil {
-            Logger.bluetooth.info("BLE 设备 [\(session.deviceName)] 服务发现失败: \(String(describing: error))，断开并冷却")
+            Logger.bluetooth.notice("BLE 设备 [\(session.deviceName)] 服务发现失败: \(String(describing: error))，断开并冷却")
             rejectSession(session)
             return
         }
 
         let services = peripheral.services?.filter { $0.uuid == Self.serviceUUID } ?? []
         guard !services.isEmpty else {
-            Logger.bluetooth.info("BLE 设备 [\(session.deviceName)] 无 AgentRing UART 服务，判定为非串口设备，断开并冷却")
+            Logger.bluetooth.notice("BLE 设备 [\(session.deviceName)] 无 AgentRing UART 服务，判定为非串口设备，断开并冷却")
             rejectSession(session)
             return
         }
@@ -433,6 +447,7 @@ extension BLESyncService: CBPeripheralDelegate {
                 // 支持写入的特征值作为 RX 端口
                 if char.properties.contains(.writeWithoutResponse) || char.properties.contains(.write) {
                     session.rxCharacteristic = char
+                    cancelGATTDiscoveryTimeout(identifier: session.identifier)
                     Logger.bluetooth.notice("BLE 副屏 [\(session.deviceName)] 串口就绪，准备推送数据")
                     markConnected(session)
                     self.pushInitialPayload(to: session)
@@ -449,10 +464,12 @@ extension BLESyncService: CBPeripheralDelegate {
         }
     }
 
-    /// 拒绝路径：记冷却黑名单、断开误连设备并清理会话；重扫统一由 didDisconnect 触发
+    /// 拒绝路径：记冷却黑名单、断开误连设备并清理会话
+    /// cancelPeripheralConnection 的 didDisconnect 回调不保证到达，不能只依赖它重扫
     private func rejectSession(_ session: BLESession) {
         gattRejectCooldowns[session.identifier] = Date().timeIntervalSince1970
         sessions.removeValue(forKey: session.identifier)
+        cancelGATTDiscoveryTimeout(identifier: session.identifier)
         let deviceName = session.deviceName
         session.peripheral.delegate = nil
         centralManager?.cancelPeripheralConnection(session.peripheral)
@@ -462,6 +479,31 @@ extension BLESyncService: CBPeripheralDelegate {
                 self.connectedDeviceName = nil
             }
         }
+        // 会话已清空且未在扫描（didConnect 时停过）：立即恢复扫描，不留接力空窗
+        if isRunning, sessions.isEmpty, centralManager?.isScanning != true {
+            Logger.bluetooth.notice("拒绝后恢复扫描")
+            startScanning()
+        }
+    }
+
+    // MARK: - GATT 发现超时看门狗
+
+    /// didConnect 后武装：服务/特征发现回调若 6s 内不来，判定挂死走拒绝路径
+    private func beginGATTDiscoveryTimeout(identifier: UUID) {
+        cancelGATTDiscoveryTimeout(identifier: identifier)
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, let session = self.sessions[identifier] else { return }
+            guard session.rxCharacteristic == nil else { return }
+            Logger.bluetooth.notice("BLE 设备 [\(session.deviceName)] GATT 服务发现超时（\(Int(Self.gattDiscoveryTimeout))s）无回调，断开并冷却")
+            self.rejectSession(session)
+        }
+        gattDiscoveryTimeouts[identifier] = work
+        queue.asyncAfter(deadline: .now() + Self.gattDiscoveryTimeout, execute: work)
+    }
+
+    private func cancelGATTDiscoveryTimeout(identifier: UUID) {
+        gattDiscoveryTimeouts[identifier]?.cancel()
+        gattDiscoveryTimeouts.removeValue(forKey: identifier)
     }
 
     /// GATT 串口就绪：此刻才标记为已连接副屏
