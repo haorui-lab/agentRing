@@ -266,11 +266,13 @@ final class BluetoothSyncService: NSObject {
                 guard self.isRunning, session.isConnecting else { return }
                 self.cancelConnectTimeout(for: session)
 
-                let resolved = channelID ?? Self.fallbackChannelID
-                if channelID == nil {
+                if let channelID {
+                    self.openChannel(for: session, channelID: channelID)
+                } else {
+                    // SDP 正常结束但没拿到通道：同轮回退预备通道
                     Logger.bluetooth.notice("副屏 [\(session.deviceName)] SDP 未查询到 SPP 通道，回退预备通道 \(Self.fallbackChannelID)")
+                    self.openChannelAsync(for: session, channelID: Self.fallbackChannelID)
                 }
-                self.openChannel(for: session, channelID: resolved)
             }
         }
     }
@@ -340,10 +342,17 @@ final class BluetoothSyncService: NSObject {
         }
 
         Logger.bluetooth.info("副屏 [\(session.deviceName)] 同步打开 RFCOMM 通道返回: \(result, privacy: .public)，尝试异步打开通道 \(channelID)...")
+        openChannelAsync(for: session, channelID: channelID)
+    }
+
+    /// 异步打开 RFCOMM 通道（不阻塞串行队列），并重新武装 8s 超时看门狗
+    private func openChannelAsync(for session: DisplaySession, channelID: BluetoothRFCOMMChannelID) {
+        session.isConnecting = true
         beginConnectTimeout(for: session)
-        let asyncStatus = session.device.openRFCOMMChannelAsync(&channel, withChannelID: channelID, delegate: self)
-        if asyncStatus != kIOReturnSuccess {
-            Logger.bluetooth.info("副屏 [\(session.deviceName)] 异步发起 RFCOMM 通道失败: \(asyncStatus, privacy: .public)")
+        var channel: IOBluetoothRFCOMMChannel?
+        let status = session.device.openRFCOMMChannelAsync(&channel, withChannelID: channelID, delegate: self)
+        if status != kIOReturnSuccess {
+            Logger.bluetooth.info("副屏 [\(session.deviceName)] 异步发起 RFCOMM 通道失败: \(status, privacy: .public)")
             teardown(session: session)
         }
     }
@@ -392,6 +401,18 @@ final class BluetoothSyncService: NSObject {
         let work = DispatchWorkItem { [weak self] in
             guard let self else { return }
             guard session.channel?.isOpen() != true else { return }
+
+            // SDP 查询挂死（回调一直不回来）：丢弃迟到回调，同轮直接用
+            // 预备通道异步打开，不再空等下一轮重连
+            if session.isQueryingSDP {
+                Logger.bluetooth.info("副屏 [\(session.deviceName)] SDP 查询超时（\(Int(Self.connectTimeout))s）无响应，丢弃回调并同轮回退预备通道 \(Self.fallbackChannelID)")
+                sdpQueryCompletions.removeValue(forKey: session.address)
+                session.isQueryingSDP = false
+                self.cancelConnectTimeout(for: session)
+                self.openChannelAsync(for: session, channelID: Self.fallbackChannelID)
+                return
+            }
+
             Logger.bluetooth.info("副屏 [\(session.deviceName)] 连接超时（\(Int(Self.connectTimeout))s），释放并等待下轮重连")
             self.teardown(session: session)
         }
