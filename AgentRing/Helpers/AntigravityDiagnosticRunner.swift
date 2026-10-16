@@ -93,7 +93,7 @@ final class AntigravityDiagnosticRunner: DiagnosticRunner {
         request.timeoutInterval = 20
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue("antigravity/1.2.1", forHTTPHeaderField: "User-Agent")
+        request.setValue(AntigravityAPIService.requestUserAgent, forHTTPHeaderField: "User-Agent")
         request.httpBody = "{}".data(using: .utf8)
 
         let startTime = Date()

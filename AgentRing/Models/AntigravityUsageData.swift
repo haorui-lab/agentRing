@@ -34,15 +34,16 @@ struct AntigravityUsageData: Sendable {
         let weeklyLimit: LimitData?
     }
 
-    /// 便捷访问 Gemini 核心模型组
+    /// 便捷访问 Gemini 核心模型组。
+    /// 严格匹配 displayName 含 "gemini" 的组；找不到时返回 nil 而非回退到其他组——
+    /// 错把 3P 数据标成 Gemini（假 100%）比缺数据更糟，缺数据时 UI 会自然隐藏该列。
     var geminiGroup: ModelGroup? {
-        groups.first { $0.displayName.localizedCaseInsensitiveContains("gemini") } ?? groups.first
+        groups.first { $0.displayName.localizedCaseInsensitiveContains("gemini") }
     }
 
     /// 便捷访问 Claude 与 GPT 第三方模型组
     var thirdPartyGroup: ModelGroup? {
         groups.first { $0.displayName.localizedCaseInsensitiveContains("claude") || $0.displayName.localizedCaseInsensitiveContains("gpt") }
-            ?? (groups.count > 1 ? groups[1] : nil)
     }
 
     /// Gemini 5小时主窗口额度
@@ -157,8 +158,9 @@ nonisolated struct AntigravityQuotaResponse: Codable, Sendable {
             )
         }
 
-        // 默认将 Gemini 组（或第一个组）作为主菜单栏显示的 primary (5h) 和 secondary (weekly)
-        let primaryGroup = parsedGroups.first { $0.displayName.localizedCaseInsensitiveContains("gemini") } ?? parsedGroups.first
+        // 主菜单栏 primary/secondary 仅在能明确识别 Gemini 组时填充；
+        // 找不到 Gemini 组时保持 nil，禁止回退到 3P 组（避免把 3P 用量错标成 Gemini）。
+        let primaryGroup = parsedGroups.first { $0.displayName.localizedCaseInsensitiveContains("gemini") }
 
         return AntigravityUsageData(
             primary: primaryGroup?.fiveHourLimit,

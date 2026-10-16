@@ -18,7 +18,13 @@ class AntigravityAPIService: UsageProvider {
     private let taskLock = NSLock()
 
     private let cloudEndpoint = "https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary"
-    private let userAgent = "antigravity/1.2.1"
+    /// UA 版本必须 ≥ antigravity/2.5.2：服务端按 UA 版本下发配额分组，
+    /// 旧版本（≤2.5.1）只返回「Claude and GPT models」组，缺失「Gemini Models」组，
+    /// 导致 Gemini 圆环回退显示 3P 数据/100%。对齐官方 IDE 当前版本（如 2.24.0）。
+    /// 诊断 runner 等其他请求方一律引用此常量，禁止再写死第二份版本号。
+    static let requestUserAgent = "antigravity/2.24.0"
+
+    private let userAgent = requestUserAgent
 
     private static let credentialsCacheLock = NSLock()
     private static var credentialsCache: (available: Bool, checkedAt: Date)?

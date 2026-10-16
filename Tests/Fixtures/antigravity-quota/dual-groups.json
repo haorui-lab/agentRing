@@ -1,0 +1,45 @@
+{
+  "groups": [
+    {
+      "displayName": "Gemini Models",
+      "description": "Models within this group: Gemini Flash, Gemini Pro",
+      "buckets": [
+        {
+          "bucketId": "gemini-weekly",
+          "displayName": "Weekly Limit Remaining",
+          "window": "weekly",
+          "resetTime": "2026-10-23T02:12:05Z",
+          "remainingFraction": 0.75
+        },
+        {
+          "bucketId": "gemini-5h",
+          "displayName": "Five Hour Limit Remaining",
+          "window": "5h",
+          "resetTime": "2026-10-16T07:12:05Z",
+          "remainingFraction": 0.25
+        }
+      ]
+    },
+    {
+      "displayName": "Claude and GPT models",
+      "description": "Models within this group: Claude Opus, Claude Sonnet, GPT-OSS",
+      "buckets": [
+        {
+          "bucketId": "3p-weekly",
+          "displayName": "Weekly Limit Remaining",
+          "window": "weekly",
+          "resetTime": "2026-10-23T02:12:05Z",
+          "remainingFraction": 1
+        },
+        {
+          "bucketId": "3p-5h",
+          "displayName": "Five Hour Limit Remaining",
+          "window": "5h",
+          "resetTime": "2026-10-16T07:12:05Z",
+          "remainingFraction": 1
+        }
+      ]
+    }
+  ],
+  "description": "Within each group, models share a weekly limit and a 5-hour limit."
+}
