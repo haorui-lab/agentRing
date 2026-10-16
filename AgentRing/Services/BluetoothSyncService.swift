@@ -15,9 +15,13 @@ import Foundation
 import IOBluetooth
 import OSLog
 import AppKit
+import Combine
 
-final class BluetoothSyncService: NSObject {
+final class BluetoothSyncService: NSObject, ObservableObject {
     static let shared = BluetoothSyncService()
+
+    /// 经典蓝牙已连接副屏名列表（主线程发布，供设置页展示）
+    @Published private(set) var connectedClassicDeviceNames: [String] = []
 
     // MARK: - 协议常量
 
@@ -101,6 +105,7 @@ final class BluetoothSyncService: NSObject {
             self.removeWakeObserver()
             self.teardownAll()
             self.sessions.removeAll()
+            self.publishConnectedClassicDevices()
             self.reconnectTimer?.invalidate()
             self.reconnectTimer = nil
             Logger.bluetooth.notice("蓝牙同步服务停止")
@@ -221,6 +226,7 @@ final class BluetoothSyncService: NSObject {
             teardown(session: session)
             sessions.removeValue(forKey: addr)
         }
+        publishConnectedClassicDevices()
 
         let now = Date().timeIntervalSince1970
 
@@ -367,6 +373,7 @@ final class BluetoothSyncService: NSObject {
         session.channel = channel
         Logger.bluetooth.notice("副屏 [\(session.deviceName)] RFCOMM 通道已建立 (channel \(channelID))")
 
+        publishConnectedClassicDevices()
         pushInitialPayload(to: session)
     }
 
@@ -386,6 +393,18 @@ final class BluetoothSyncService: NSObject {
         session.isConnecting = false
         session.isQueryingSDP = false
         sdpQueryCompletions.removeValue(forKey: session.address)
+        publishConnectedClassicDevices()
+    }
+
+    /// 把当前 RFCOMM 已连接的副屏名列表发布到主线程（供设置页展示）
+    private func publishConnectedClassicDevices() {
+        let names = sessions.values
+            .filter { $0.isConnected }
+            .map { $0.deviceName }
+            .sorted()
+        DispatchQueue.main.async { [weak self] in
+            self?.connectedClassicDeviceNames = names
+        }
     }
 
     private func teardownAll() {

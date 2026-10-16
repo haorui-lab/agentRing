@@ -11,6 +11,7 @@ import AppKit
 struct BluetoothSettingsView: View {
     @ObservedObject private var settings = UserSettings.shared
     @ObservedObject private var bleService = BLESyncService.shared
+    @ObservedObject private var classicService = BluetoothSyncService.shared
     @State private var justPushed = false
 
     var body: some View {
@@ -58,7 +59,7 @@ struct BluetoothSettingsView: View {
                             Text("自动连接最近设备 (默认)").tag("")
 
                             ForEach(bleService.discoveredDevices) { device in
-                                Text("\(device.name) (\(device.rssi) dBm)\(device.isConnected ? " [已连接]" : "")")
+                                Text("\(device.name) (\(device.rssi) dBm)\(deviceTag(device.name))")
                                     .tag(device.name)
                             }
 
@@ -87,16 +88,23 @@ struct BluetoothSettingsView: View {
                     }
                     .padding(.leading, 20)
 
-                    // 连接状态指示与即时推流
+                    // 连接状态指示与即时推流（经典 + BLE 两路分别展示）
                     HStack(spacing: 8) {
                         Circle()
-                            .fill(bleService.connectedDeviceName != nil ? Color.green : Color.secondary.opacity(0.4))
+                            .fill(hasAnyConnection ? Color.green : Color.secondary.opacity(0.4))
                             .frame(width: 8, height: 8)
 
-                        if let connected = bleService.connectedDeviceName {
-                            Text("当前连接: \(connected)")
-                                .font(.callout)
-                                .foregroundColor(.primary)
+                        if hasAnyConnection {
+                            ForEach(classicConnectionLines, id: \.self) { line in
+                                Text(line)
+                                    .font(.callout)
+                                    .foregroundColor(.primary)
+                            }
+                            if let bleName = bleService.connectedDeviceName {
+                                Text("BLE: \(bleName)")
+                                    .font(.callout)
+                                    .foregroundColor(.primary)
+                            }
                         } else {
                             Text("未连接副屏 (就绪搜索中)")
                                 .font(.callout)
@@ -105,7 +113,7 @@ struct BluetoothSettingsView: View {
 
                         Spacer()
 
-                        if bleService.connectedDeviceName != nil {
+                        if hasAnyConnection {
                             Button {
                                 manualPushData()
                             } label: {
@@ -191,6 +199,29 @@ struct BluetoothSettingsView: View {
                 }
             }
         }
+    }
+
+    // MARK: - 连接状态汇总
+
+    /// 设备在 Picker 里的通道/状态标注：经典已连 > BLE 已连 > 无标注
+    private func deviceTag(_ name: String) -> String {
+        if classicService.connectedClassicDeviceNames.contains(name) {
+            return " [经典·已连接]"
+        }
+        if bleService.connectedDeviceName == name {
+            return " [BLE·已连接]"
+        }
+        return ""
+    }
+
+    /// 经典已连接副屏的状态行（如 "经典: AgentRing-vivoX21A"）
+    private var classicConnectionLines: [String] {
+        classicService.connectedClassicDeviceNames.map { "经典: \($0)" }
+    }
+
+    /// 任一通道（经典或 BLE）有已连接副屏
+    private var hasAnyConnection: Bool {
+        !classicService.connectedClassicDeviceNames.isEmpty || bleService.connectedDeviceName != nil
     }
 
     // MARK: - 手动推流方法
