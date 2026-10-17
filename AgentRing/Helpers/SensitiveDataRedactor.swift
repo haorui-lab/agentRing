@@ -36,28 +36,27 @@ class SensitiveDataRedactor {
         return "\(h)...\(p)...\(s)... (\(token.count) chars)"
     }
 
-    /// 脱敏文本中的敏感信息
-    /// 使用正则表达式查找并替换文本中的 Codex token
-    /// - Parameter text: 包含敏感信息的原始文本
-    /// - Returns: 脱敏后的文本
-    /// - Note: 用于日志和诊断输出，自动识别并脱敏常见格式
+    private static let textReplacements: [(regex: NSRegularExpression, template: String)] = {
+        // 同时覆盖 JSON、Cookie、URL query 和 key=value；键名必须完整匹配。
+        let tokenKeys = #"(?:__Secure-next-auth\.session-token(?:\.\d+)?|session-token(?:\.\d+)?|refresh_token|refreshToken|access_token|accessToken|id_token|idToken)"#
+        let replacements: [(pattern: String, template: String)] = [
+            (#"((?<![\w.-])"# + tokenKeys + #"["']?\s*[=:]\s*["']?)[^;\s"'&,}\]]+"#, "$1***REDACTED***"),
+            (#"((?<![\w.-])Authorization["']?\s*:\s*["']?Bearer\s+)[^;\s"',}\]]+"#, "$1***REDACTED***")
+        ]
+
+        return replacements.map {
+            // 固定的正则仅编译一次，避免每条诊断日志重复编译。
+            (try! NSRegularExpression(pattern: $0.pattern, options: .caseInsensitive), $0.template)
+        }
+    }()
+
+    /// 脱敏日志和诊断文本中的常见凭证字段，保留外围格式。
     static func redactText(_ text: String) -> String {
         var sanitized = text
 
-        let replacements: [(pattern: String, template: String)] = [
-            ("(__Secure-next-auth\\.session-token\\s*[=:]\\s*)[^;\\s\"']+", "$1***REDACTED***"),
-            ("(session-token\\s*[=:]\\s*)[^;\\s\"']+", "$1***REDACTED***"),
-            ("(refresh_token\\s*[=:]\\s*)[^;\\s\"']+", "$1***REDACTED***"),
-            ("(accessToken\\s*[=:]\\s*)[^;\\s\"']+", "$1***REDACTED***"),
-            ("(Authorization:\\s*Bearer\\s+)[^;\\s\"']+", "$1***REDACTED***")
-        ]
-
-        for replacement in replacements {
-            guard let regex = try? NSRegularExpression(pattern: replacement.pattern, options: .caseInsensitive) else {
-                continue
-            }
+        for replacement in textReplacements {
             let range = NSRange(sanitized.startIndex..., in: sanitized)
-            sanitized = regex.stringByReplacingMatches(
+            sanitized = replacement.regex.stringByReplacingMatches(
                 in: sanitized,
                 options: [],
                 range: range,

@@ -4,7 +4,6 @@
 //
 
 import Foundation
-import OSLog
 
 /// 定时器统一管理器
 /// 负责应用内所有定时器的创建、调度和清理，防止内存泄漏
@@ -15,88 +14,54 @@ class TimerManager {
     /// 定时器存储字典，键为标识符，值为 Timer 实例
     private var timers: [String: Timer] = [:]
 
-    /// 线程安全队列
-    private let queue = DispatchQueue(label: "app.agentring.timer", attributes: .concurrent)
+    /// Timer 和 RunLoop 的操作统一在主线程串行执行。
+    /// 后台调用会同步切到主线程，调用方不应阻塞主线程等待它完成。
+    private func onMain<T>(_ operation: () -> T) -> T {
+        if Thread.isMainThread { return operation() }
+        return DispatchQueue.main.sync(execute: operation)
+    }
 
-    // MARK: - Public Methods
-
-    /// 调度定时器
-    /// - Parameters:
-    ///   - identifier: 定时器唯一标识符
-    ///   - interval: 时间间隔（秒）
-    ///   - repeats: 是否重复执行
-    ///   - block: 定时器触发时执行的闭包
-    /// - Note: 如果相同标识符的定时器已存在，会先取消旧定时器
+    /// 替换同名定时器，并加入主 RunLoop 的 common modes，避免菜单交互暂停刷新。
     func schedule(
         _ identifier: String,
         interval: TimeInterval,
         repeats: Bool = true,
         block: @escaping () -> Void
     ) {
-        // 同步取消旧定时器并创建新定时器，避免竞态条件
-        queue.sync(flags: .barrier) {
-            // 取消同标识符的旧定时器
-            if let oldTimer = self.timers[identifier] {
-                oldTimer.invalidate()
-                self.timers.removeValue(forKey: identifier)
+        onMain {
+            timers.removeValue(forKey: identifier)?.invalidate()
+            let timer = Timer(timeInterval: interval, repeats: repeats) { [weak self] firedTimer in
+                guard let self, self.timers[identifier] === firedTimer else { return }
+                if !repeats {
+                    self.timers.removeValue(forKey: identifier)
+                }
+                // 先移除单次定时器，允许回调安全地用同一标识重新调度。
+                block()
             }
+            timers[identifier] = timer
+            RunLoop.main.add(timer, forMode: .common)
         }
-
-        // 在主线程创建定时器（Timer.scheduledTimer 需要 RunLoop）
-        let timer = Timer.scheduledTimer(
-            withTimeInterval: interval,
-            repeats: repeats
-        ) { _ in
-            block()
-        }
-
-        // 保存新定时器
-        queue.async(flags: .barrier) {
-            self.timers[identifier] = timer
-        }
-
-        Logger.menuBar.info("⏰ Timer scheduled: \(identifier) (interval: \(interval)s, repeats: \(repeats))")
     }
 
-    /// 取消指定定时器
-    /// - Parameter identifier: 定时器标识符
     func invalidate(_ identifier: String) {
-        queue.sync(flags: .barrier) {
-            if let timer = self.timers[identifier] {
-                timer.invalidate()
-                self.timers.removeValue(forKey: identifier)
-                Logger.menuBar.info("⏹️ Timer invalidated: \(identifier)")
-            }
+        onMain {
+            timers.removeValue(forKey: identifier)?.invalidate()
         }
     }
 
-    /// 取消所有定时器
-    /// - Note: 通常在应用退出或重大状态变更时调用
     func invalidateAll() {
-        queue.sync(flags: .barrier) {
-            let count = self.timers.count
-            self.timers.values.forEach { $0.invalidate() }
-            self.timers.removeAll()
-            Logger.menuBar.info("🛑 All timers invalidated (count: \(count))")
+        onMain {
+            timers.values.forEach { $0.invalidate() }
+            timers.removeAll()
         }
     }
 
-    /// 检查指定定时器是否活跃
-    /// - Parameter identifier: 定时器标识符
-    /// - Returns: 如果定时器存在且有效返回 true
     func isActive(_ identifier: String) -> Bool {
-        return queue.sync {
-            return timers[identifier]?.isValid ?? false
-        }
+        onMain { timers[identifier]?.isValid ?? false }
     }
 
-    /// 获取当前活跃的定时器列表
-    /// - Returns: 活跃定时器的标识符数组
-    /// - Note: 主要用于调试和诊断
     func activeTimers() -> [String] {
-        return queue.sync {
-            return timers.keys.filter { timers[$0]?.isValid == true }
-        }
+        onMain { timers.keys.filter { timers[$0]?.isValid == true } }
     }
 
     // MARK: - Deinit
