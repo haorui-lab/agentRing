@@ -308,6 +308,22 @@ struct AuthSettingsView: View {
                     .disabled(!settings.antigravityEnabled || isRecheckingAntigravity)
                 }
 
+                if settings.antigravityEnabled,
+                   settings.antigravityCredentialsPresent,
+                   let email = settings.antigravityAccountEmail {
+                    HStack(spacing: 6) {
+                        Text(L.Account.antigravityAccountLabel)
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                        Text(email)
+                            .font(.caption)
+                            .foregroundColor(.primary)
+                            .textSelection(.enabled)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
+                }
+
                 Text(L.Account.antigravitySourceHint)
                     .font(.caption)
                     .foregroundColor(.secondary)

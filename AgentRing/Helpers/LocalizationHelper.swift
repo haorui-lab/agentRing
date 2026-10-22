@@ -60,6 +60,7 @@ enum L {
         static var antigravityHint: String { localized("account.antigravity_hint") }
         static var antigravitySourceHint: String { localized("account.antigravity_source_hint") }
         static var antigravityRecheck: String { localized("account.antigravity_recheck") }
+        static var antigravityAccountLabel: String { localized("account.antigravity_account_label") }
     }
     
     // MARK: - Usage Detail View

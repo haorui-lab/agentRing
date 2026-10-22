@@ -126,7 +126,7 @@ class AntigravityAPIService: UsageProvider {
         credentialsCache = (false, Date())
         credentialsRefreshScheduled = false
         credentialsCacheLock.unlock()
-        publishCredentialsPresence(false)
+        publishCredentialsPresence(false, accountEmail: nil)
     }
 
     /// Quota 返回 401/403：本地 oauth 账号很可能与 Antigravity 活跃账号错位，隔离文件直到钥匙串同步。
@@ -169,18 +169,34 @@ class AntigravityAPIService: UsageProvider {
     private static func refreshCredentialsCacheSync(allowInteractiveKeychain: Bool = false) -> Bool {
         // 后台刷新默认静默；仅 AuthSettings 等显式操作才允许可能弹窗的 CLI
         let available = resolveAccessToken(allowInteractiveKeychain: allowInteractiveKeychain) != nil
+        let accountEmail = available ? readAccountEmailFromOAuthFile() : nil
         credentialsCacheLock.lock()
         credentialsCache = (available, Date())
         credentialsRefreshScheduled = false
         credentialsCacheLock.unlock()
-        publishCredentialsPresence(available)
+        publishCredentialsPresence(available, accountEmail: accountEmail)
         return available
     }
 
-    private static func publishCredentialsPresence(_ available: Bool) {
+    private static func publishCredentialsPresence(_ available: Bool, accountEmail: String? = nil) {
+        let email = available ? (accountEmail ?? readAccountEmailFromOAuthFile()) : nil
         DispatchQueue.main.async {
             UserSettings.shared.applyAntigravityCredentialsPresent(available)
+            UserSettings.shared.applyAntigravityAccountEmail(email)
         }
+    }
+
+    /// 从 `~/.gemini/oauth_creds.json` 的 `id_token` 解析当前自动路径对应的 Google 账号。
+    /// 用于用量打标与设置页展示；隔离中的文件视为无身份。
+    static func readAccountEmailFromOAuthFile() -> String? {
+        if isOAuthFileQuarantined() { return nil }
+        guard let data = try? Data(contentsOf: oauthCredsFileURL),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let idToken = json["id_token"] as? String,
+              !idToken.isEmpty else {
+            return nil
+        }
+        return AntigravityAccountIdentity.email(fromIDToken: idToken)
     }
 
     func fetchUsage(completion: @escaping (Result<AntigravityUsageData, Error>) -> Void) {
@@ -202,12 +218,13 @@ class AntigravityAPIService: UsageProvider {
                 DispatchQueue.main.async { completion(.failure(UsageError.noCredentials)) }
                 return
             }
+            let accountEmail = Self.readAccountEmailFromOAuthFile()
             Self.credentialsCacheLock.lock()
             Self.credentialsCache = (true, Date())
             Self.credentialsRefreshScheduled = false
             Self.credentialsCacheLock.unlock()
-            Self.publishCredentialsPresence(true)
-            self.fetchCloudQuota(token: token, completion: completion)
+            Self.publishCredentialsPresence(true, accountEmail: accountEmail)
+            self.fetchCloudQuota(token: token, accountEmail: accountEmail, completion: completion)
         }
     }
 
@@ -627,7 +644,11 @@ class AntigravityAPIService: UsageProvider {
 
     // MARK: - Cloud API Fetch
 
-    private func fetchCloudQuota(token: String, completion: @escaping (Result<AntigravityUsageData, Error>) -> Void) {
+    private func fetchCloudQuota(
+        token: String,
+        accountEmail: String?,
+        completion: @escaping (Result<AntigravityUsageData, Error>) -> Void
+    ) {
         guard let url = URL(string: cloudEndpoint) else {
             DispatchQueue.main.async { completion(.failure(UsageError.invalidURL)) }
             return
@@ -673,7 +694,8 @@ class AntigravityAPIService: UsageProvider {
 
             do {
                 let response = try JSONDecoder().decode(AntigravityQuotaResponse.self, from: data)
-                let usageData = response.toUsageData()
+                // 把解析到的 Google 账号打在用量上，切换后才能区分「这是谁的圆环」
+                let usageData = response.toUsageData(accountEmail: accountEmail)
                 DispatchQueue.main.async { completion(.success(usageData)) }
             } catch {
                 Logger.api.error("Antigravity 配额数据解析失败: \(error.localizedDescription)")
@@ -741,6 +763,7 @@ class AntigravityAPIService: UsageProvider {
         )
 
         return AntigravityUsageData(
+            accountEmail: "debug@example.com",
             primary: gemini5h,
             secondary: geminiWeekly,
             groups: [geminiGroup, thirdPartyGroup]

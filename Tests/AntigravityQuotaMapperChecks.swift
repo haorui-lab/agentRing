@@ -8,6 +8,7 @@ import Foundation
 // 3. 响应包装在 {"response": {...}} 的 ConnectRPC 形状
 // 4. bucket window/bucketId/displayName 多形态归类
 // 5. resetTime ISO8601（含/不含小数秒）解析
+// 6. 多账号：id_token email 解析 + 用量身份切换检测（见 AntigravityAccountIdentityChecks）
 
 @main
 struct AntigravityQuotaMapperChecks {
@@ -20,6 +21,7 @@ struct AntigravityQuotaMapperChecks {
         checkConnectRPCWrapper(root)
         checkBucketClassification()
         checkResetTimeParsing()
+        AntigravityAccountIdentityChecks.runAll()
 
         print("All antigravity quota mapper checks passed.")
     }

@@ -38,6 +38,8 @@ final class DataRefreshManager: ObservableObject {
     private var cursorSessionExpiredNotified = false
     private var antigravitySessionExpiredNotified = false
     private var pendingFetches = 0
+    /// 账号切换 / 清空后递增；丢弃切换前发出的过期用量回调，避免旧账号数据回填 UI。
+    private var antigravityFetchGeneration = 0
 
     private var shouldFetchCodexUsage: Bool {
         #if DEBUG
@@ -164,9 +166,16 @@ final class DataRefreshManager: ObservableObject {
     }
 
     private func fetchAntigravityUsage() {
+        let generation = antigravityFetchGeneration
         antigravityApiService.fetchUsage { [weak self] result in
             DispatchQueue.main.async {
                 guard let self else { return }
+                // 切换账号后旧请求可能仍成功返回——丢弃，避免错账号用量闪回。
+                // 不调用 noteFetchFinished：accountChanged 已用新一轮 fetchUsage 重置 pendingFetches。
+                guard self.antigravityFetchGeneration == generation else {
+                    Logger.menuBar.debug("Antigravity 丢弃过期 fetch 回调 generation=\(generation)/\(self.antigravityFetchGeneration)")
+                    return
+                }
                 switch result {
                 case .success(let data):
                     self.processAntigravitySuccess(data)
@@ -216,8 +225,25 @@ final class DataRefreshManager: ObservableObject {
     }
 
     private func processAntigravitySuccess(_ data: AntigravityUsageData) {
+        // oauth 文件被外部切换工具（agy-swap 等）或「重新检查」同步成另一账号时，
+        // 用量身份会变：清空通知/重置上下文，避免把旧账号的圆环/阈值当成新账号。
+        if AntigravityAccountIdentity.didSwitch(
+            from: antigravityUsageData?.accountEmail,
+            to: data.accountEmail
+        ) {
+            // 邮箱属 PII：仅记录「是否切换 + 是否已知身份」，不落明文到统一日志
+            let hadPreviousIdentity = antigravityUsageData?.accountEmail != nil
+            let hasNextIdentity = data.accountEmail != nil
+            Logger.menuBar.notice(
+                "Antigravity 用量账号切换 from=\(hadPreviousIdentity, privacy: .public) to=\(hasNextIdentity, privacy: .public)"
+            )
+            resetAntigravityReloginState()
+            NotificationManager.shared.resetAllNotificationStates()
+        }
+
         antigravityUsageData = data
         antigravityNeedsRelogin = false
+        settings.applyAntigravityAccountEmail(data.accountEmail)
         if errorMessage == UsageError.sessionExpired.localizedDescription && !codexNeedsRelogin && !cursorNeedsRelogin {
             errorMessage = nil
         }
@@ -274,6 +300,7 @@ final class DataRefreshManager: ObservableObject {
     private func clearAntigravityUsageState() {
         antigravityUsageData = nil
         lastAntigravityResetsAt = nil
+        // 账号邮箱由凭证探测 / 成功回调维护；这里不清，避免「重新检查」清空用量时设置页闪断
     }
 
     private func resetCursorReloginState() {
@@ -586,6 +613,8 @@ final class DataRefreshManager: ObservableObject {
         }
         if provider == nil || provider == .antigravity {
             resetAntigravityReloginState()
+            antigravityFetchGeneration += 1
+            antigravityApiService.cancelAllRequests()
             AntigravityAPIService.invalidateCredentialsCache()
             clearAntigravityUsageState()
         }

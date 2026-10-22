@@ -484,8 +484,9 @@
 "account.antigravity_disabled" = "Monitoring is turned off";
 "account.antigravity_checking" = "Checking credentials…";
 "account.antigravity_hint" = "Uses the token Antigravity already saved on this Mac";
-"account.antigravity_source_hint" = "Reads ~/.gemini/oauth_creds.json first (if not expired), then macOS Keychain service gemini / account antigravity.";
+"account.antigravity_source_hint" = "Auto refresh uses ~/.gemini/oauth_creds.json. After switching Google accounts in Antigravity or agy, click Recheck so Keychain syncs the active account into that file. Usage is labeled with the Google email of the token in use.";
 "account.antigravity_recheck" = "Recheck";
+"account.antigravity_account_label" = "Showing usage for";
 
 /* Codex OAuth Login (system browser) */
 "weblogin.codex_oauth_preparing" = "Preparing sign-in…";

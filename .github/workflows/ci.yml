@@ -60,6 +60,9 @@ jobs:
       - name: Validate Cursor usage mapper presentation
         run: bash Scripts/test-cursor-usage-mapper.sh
 
+      - name: Validate Antigravity quota mapper and account identity
+        run: bash Scripts/test-antigravity-quota-mapper.sh
+
       - name: Validate usage reset detection
         run: bash Scripts/test-usage-reset-detection.sh
 

@@ -3,7 +3,8 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 export DEVELOPER_DIR="${DEVELOPER_DIR:-/Applications/Xcode.app/Contents/Developer}"
 # Antigravity quota summary mapper: dual-group (UA >= 2.5.2), 3P-only (old UA) must NOT fake gemini 100%,
-# ConnectRPC wrapper shape, bucket window/bucketId/displayName classification, ISO8601 resetTime.
+# ConnectRPC wrapper shape, bucket window/bucketId/displayName classification, ISO8601 resetTime,
+# plus account-identity (id_token email / multi-account switch detection).
 OUT="/tmp/agentring-antigravity-quota-mapper-checks"
 STUB="/tmp/agentring-antigravity-quota-test-stub.swift"
 
@@ -21,6 +22,7 @@ EOF
 swiftc -swift-version 5 \
     AgentRing/Models/AntigravityUsageData.swift \
     "$STUB" \
+    Tests/AntigravityAccountIdentityChecks.swift \
     Tests/AntigravityQuotaMapperChecks.swift \
     -o "$OUT"
 "$OUT"

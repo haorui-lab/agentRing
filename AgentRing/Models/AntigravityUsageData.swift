@@ -9,6 +9,9 @@ import Foundation
 
 /// Antigravity 使用量数据（应用内部使用的标准化结构）
 struct AntigravityUsageData: Sendable {
+    /// 当前凭证对应的 Google 账号（来自 oauth `id_token`）。
+    /// 多账号切换后用于识别「展示的是谁的用量」，避免把旧账号数据当成新账号。
+    let accountEmail: String?
     /// 5小时主窗口用量（Gemini 核心模型）
     let primary: LimitData?
     /// 7天/周级次窗口用量（Gemini 核心模型）
@@ -55,6 +58,53 @@ struct AntigravityUsageData: Sendable {
     var thirdPartyPrimary: LimitData? { thirdPartyGroup?.fiveHourLimit }
     /// Claude / GPT 周级额度
     var thirdPartySecondary: LimitData? { thirdPartyGroup?.weeklyLimit }
+
+    /// 附带账号身份（fetch 成功后由 API 层写入）。
+    func withAccountEmail(_ email: String?) -> AntigravityUsageData {
+        AntigravityUsageData(
+            accountEmail: email,
+            primary: primary,
+            secondary: secondary,
+            groups: groups
+        )
+    }
+}
+
+/// Antigravity 账号身份解析（oauth `id_token` / 切换检测）。独立于钥匙串，便于单测。
+enum AntigravityAccountIdentity {
+    /// 从 Google `id_token` JWT 取 email；缺失时退回 `sub`。
+    static func email(fromIDToken token: String) -> String? {
+        guard let payload = jwtPayload(token) else { return nil }
+        if let email = payload["email"] as? String {
+            let trimmed = email.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty { return trimmed }
+        }
+        if let sub = payload["sub"] as? String {
+            let trimmed = sub.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty { return trimmed }
+        }
+        return nil
+    }
+
+    /// 两个身份是否指向不同账号（都有值且大小写不敏感不等）。
+    static func didSwitch(from previous: String?, to next: String?) -> Bool {
+        guard let previous, let next else { return false }
+        return previous.caseInsensitiveCompare(next) != .orderedSame
+    }
+
+    private static func jwtPayload(_ token: String) -> [String: Any]? {
+        let parts = token.split(separator: ".", omittingEmptySubsequences: false)
+        guard parts.count >= 2 else { return nil }
+        var base64 = String(parts[1])
+            .replacingOccurrences(of: "-", with: "+")
+            .replacingOccurrences(of: "_", with: "/")
+        let remainder = base64.count % 4
+        if remainder > 0 {
+            base64.append(String(repeating: "=", count: 4 - remainder))
+        }
+        guard let data = Data(base64Encoded: base64) else { return nil }
+        return try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+    }
 }
 
 extension AntigravityUsageData.LimitData {
@@ -96,7 +146,7 @@ nonisolated struct AntigravityQuotaResponse: Codable, Sendable {
         response?.groups ?? groups ?? []
     }
 
-    func toUsageData() -> AntigravityUsageData {
+    func toUsageData(accountEmail: String? = nil) -> AntigravityUsageData {
         let isoFormatter = ISO8601DateFormatter()
         isoFormatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         let backupFormatter = ISO8601DateFormatter()
@@ -163,6 +213,7 @@ nonisolated struct AntigravityQuotaResponse: Codable, Sendable {
         let primaryGroup = parsedGroups.first { $0.displayName.localizedCaseInsensitiveContains("gemini") }
 
         return AntigravityUsageData(
+            accountEmail: accountEmail,
             primary: primaryGroup?.fiveHourLimit,
             secondary: primaryGroup?.weeklyLimit,
             groups: parsedGroups

@@ -482,8 +482,9 @@
 "account.antigravity_disabled" = "监控已关闭";
 "account.antigravity_checking" = "正在检查凭证…";
 "account.antigravity_hint" = "直接使用本机 Antigravity 已经保存好的通行凭证";
-"account.antigravity_source_hint" = "优先读取未过期的 ~/.gemini/oauth_creds.json，否则回退到钥匙串 service=gemini / account=antigravity。";
+"account.antigravity_source_hint" = "自动刷新优先读 ~/.gemini/oauth_creds.json。在 Antigravity / agy 切换 Google 账号后，请点「重新检查」把钥匙串活跃账号同步进该文件。圆环对应凭证里的 Google 邮箱。";
 "account.antigravity_recheck" = "重新检查";
+"account.antigravity_account_label" = "当前用量账号";
 
 /* Codex OAuth Login (system browser) */
 "weblogin.codex_oauth_preparing" = "正在准备登录…";

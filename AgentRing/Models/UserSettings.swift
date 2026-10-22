@@ -319,6 +319,9 @@ final class UserSettings: ObservableObject {
     /// 后台探测到的 Antigravity 凭证是否可用（Published，供 SwiftUI / 布局只读，不碰钥匙串）
     @Published private(set) var antigravityCredentialsPresent: Bool = false
 
+    /// 当前自动路径 oauth 凭证对应的 Google 邮箱（来自 id_token；无则 nil）
+    @Published private(set) var antigravityAccountEmail: String?
+
     /// 本机能否读到 Antigravity 通行凭证（钥匙串 / oauth 文件）
     /// 只读 Published 缓存；过期时由 credentialsAvailable 调度后台刷新，绝不在主线程 Process/钥匙串。
     var hasValidAntigravityCredentials: Bool {
@@ -334,6 +337,14 @@ final class UserSettings: ObservableObject {
     func applyAntigravityCredentialsPresent(_ present: Bool) {
         if antigravityCredentialsPresent != present {
             antigravityCredentialsPresent = present
+        }
+    }
+
+    func applyAntigravityAccountEmail(_ email: String?) {
+        let normalized = email?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let value = (normalized?.isEmpty == false) ? normalized : nil
+        if antigravityAccountEmail != value {
+            antigravityAccountEmail = value
         }
     }
 
