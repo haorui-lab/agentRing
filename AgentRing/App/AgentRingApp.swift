@@ -71,6 +71,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             menuBarManager.startRefreshing()
         }
 
+        #if DEBUG
+        // Reproducible native UI verification for the menu-bar-only app.
+        if ProcessInfo.processInfo.arguments.contains("--open-bluetooth-settings") {
+            DispatchQueue.main.async { [weak self] in
+                self?.menuBarManager.openBluetoothSettings()
+            }
+        }
+        #endif
+
         // 使用 Combine 订阅通知，自动管理生命周期
         NotificationCenter.default.publisher(for: .openSettings)
             .sink { [weak self] notification in

@@ -83,7 +83,7 @@ flowchart LR
 
 ### [agentRing-ESP32-LCD](https://github.com/haorui-lab/agentRing-ESP32-LCD)
 
-给 ESP32 开发板准备的 IPS 副屏固件。面向微雪 ESP32-P4 7" 1024×600 电容触摸屏，LVGL 9 渲染，BLE 5.0 GATT 通电即连，也可走 USB-C 串口，无需在系统设置里手动配对。
+给 ESP32 开发板准备的 IPS 副屏固件。面向微雪 ESP32-P4 7" 1024×600 电容触摸屏，LVGL 9 渲染，BLE 5.0 GATT 首次通过屏幕验证码绑定 Mac，之后自动重连，也可走 USB-C 串口。配对和换绑见 [BLE 绑定说明](docs/ble-binding-plan.md)。
 
 想自己做一块屏？JSON 帧格式与连接约定见 [`docs/BLUETOOTH_PROTOCOL.md`](docs/BLUETOOTH_PROTOCOL.md)。欢迎适配更多硬件。
 

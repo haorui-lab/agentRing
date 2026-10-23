@@ -5,18 +5,18 @@
 //  蓝牙 BLE (Bluetooth Low Energy) GATT 副屏同步服务
 //  支持 ESP32-P4、ESP32-S3、ESP32-C6、ESP32-C3 等仅支持 BLE 的现代硬件副屏
 //  - 使用 CoreBluetooth 扫描外设名称前缀 "AgentRing"
-//  - 自动连接、协商 MTU 并发现 UART / AgentRing GATT 串口服务
+//  - 仅连接用户选择的外设；LCD 完成系统加密配对和绑定握手后再推流
 //  - 分包推送单行 JSON + '\n'
 //  - 15 秒周期发送轻量 ping 保活
 //
 
 import Foundation
-import CoreBluetooth
+@preconcurrency import CoreBluetooth
 import OSLog
 import AppKit
 import Combine
 
-public struct BLEDiscoveredDevice: Identifiable, Equatable {
+nonisolated public struct BLEDiscoveredDevice: Identifiable, Equatable {
     public let id: UUID
     public let name: String
     public let rssi: Int
@@ -30,8 +30,11 @@ public struct BLEDiscoveredDevice: Identifiable, Equatable {
     }
 }
 
-final class BLESyncService: NSObject, ObservableObject {
+nonisolated final class BLESyncService: NSObject, ObservableObject, @unchecked Sendable {
+    // CoreBluetooth/session state is confined to queue; published snapshots are
+    // written on main. SDK delegates are explicitly nonisolated for that queue.
     static let shared = BLESyncService()
+    private static let logger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "app.agentring.AgentRing", category: "Bluetooth")
 
     // MARK: - 协议常量与 UUID
 
@@ -45,36 +48,57 @@ final class BLESyncService: NSObject, ObservableObject {
     /// RX / Notify Characteristic (ESP32 -> Client)
     static let txCharUUID  = CBUUID(string: "6E400003-B5A3-F393-E0A9-E50E24DCCA9E")
 
+    static let bindingCharUUID = CBUUID(string: "6E400004-B5A3-F393-E0A9-E50E24DCCA9E")
+
     // MARK: - 观察状态
 
-    @Published public private(set) var discoveredDevices: [BLEDiscoveredDevice] = []
-    @Published public private(set) var connectedDeviceName: String? = nil
-    @Published public private(set) var isScanning = false
+    @MainActor @Published public private(set) var discoveredDevices: [BLEDiscoveredDevice] = []
+    @MainActor @Published public private(set) var connectedDeviceName: String? = nil
+    @MainActor @Published public private(set) var isScanning = false
 
-    /// 目标设备名称过滤（若为空或 "auto"，则连接任意带 AgentRing 前缀的外设）
-    private var targetDeviceName: String = ""
+    @MainActor @Published private(set) var selectedDevices: [UUID: String] = [:]
+    @MainActor @Published private(set) var connectingDeviceIDs: Set<UUID> = []
+    @MainActor @Published private(set) var deviceMessages: [UUID: String] = [:]
+    private var classicDeviceNames: Set<String> = []
+    private var savedDevices: [UUID: String] = [:]
+    private var requestedDevices: Set<UUID> = []
+    private var suspendedDevices: Set<UUID> = []
+    private var peripherals: [UUID: CBPeripheral] = [:]
+    private var advertisedNames: [UUID: String] = [:]
+    private var cancellingDevices: Set<UUID> = []
+    private static let selectionKey = "bleSelectedDevicesV2"
+    private var hostName = "Mac"
 
     // MARK: - 会话模型
 
-    private final class BLESession {
+    nonisolated private final class BLESession {
         let identifier: UUID
         let peripheral: CBPeripheral
+        let advertisedName: String
         var rxCharacteristic: CBCharacteristic?
+        var bindingCharacteristic: CBCharacteristic?
+        var authorized = false
+        var authenticationStarted = false
+        var bindingHandshake = BLEBindingHandshake()
+        let generation = UUID()
+        var pendingChunks: [Data] = []
+        var writingWithResponse = false
         var lastWriteTime: TimeInterval = 0
         /// 尚未完成特征发现的服务数；收齐后统一判定 GATT 是否可用
         var pendingServiceCount = 0
 
         var isReady: Bool {
-            peripheral.state == .connected && rxCharacteristic != nil
+            peripheral.state == .connected && rxCharacteristic != nil && authorized
         }
 
         var deviceName: String {
-            peripheral.name ?? identifier.uuidString
+            advertisedName.isEmpty ? (peripheral.name ?? identifier.uuidString) : advertisedName
         }
 
-        init(peripheral: CBPeripheral) {
+        init(peripheral: CBPeripheral, name: String) {
             self.identifier = peripheral.identifier
             self.peripheral = peripheral
+            self.advertisedName = name
         }
     }
 
@@ -87,14 +111,13 @@ final class BLESyncService: NSObject, ObservableObject {
     private var heartbeatTimer: Timer?
     private var scanTimeoutWorkItem: DispatchWorkItem?
 
-    /// 误连无 GATT 串口设备的冷却黑名单（peripheral UUID → 拉黑时间）
+    /// 失败设备冷却记录（peripheral UUID → 时间）
     /// 冷却期内 didDiscover 只更新列表、不自动 connect，防止反复粘死扫描窗口
     private var gattRejectCooldowns: [UUID: TimeInterval] = [:]
     private static let gattRejectCooldown: TimeInterval = 60
 
     /// GATT 服务发现超时看门狗：didConnect 后若回调一直不来，不能干等占坑
     private var gattDiscoveryTimeouts: [UUID: DispatchWorkItem] = [:]
-    private static let gattDiscoveryTimeout: TimeInterval = 6
 
     private let queue = DispatchQueue(label: "app.agentring.ble")
 
@@ -102,34 +125,129 @@ final class BLESyncService: NSObject, ObservableObject {
 
     private override init() {
         super.init()
+        let stored = UserDefaults.standard.dictionary(forKey: Self.selectionKey) as? [String: String] ?? [:]
+        savedDevices = Dictionary(uniqueKeysWithValues: stored.compactMap { key, value in
+            UUID(uuidString: key).map { ($0, value) }
+        })
+        let snapshot = savedDevices
+        Task { @MainActor in self.selectedDevices = snapshot }
     }
 
-    // MARK: - 控制接口
+    private func mayConnect(_ id: UUID) -> Bool {
+        isRunning && !cancellingDevices.contains(id) && BLEConnectionPolicy.mayConnect(
+            id: id, selected: Set(savedDevices.keys), requested: requestedDevices, suspended: suspendedDevices,
+            classicConnected: BLEConnectionPolicy.usesClassicConnection(
+                name: advertisedNames[id] ?? savedDevices[id] ?? peripherals[id]?.name ?? "", connectedNames: classicDeviceNames))
+    }
 
-    func setTargetDeviceName(_ name: String) {
+    private func message(_ text: String?, for id: UUID) {
+        DispatchQueue.main.async { self.deviceMessages[id] = text }
+    }
+
+    private func saveSelection() {
+        UserDefaults.standard.set(Dictionary(uniqueKeysWithValues: savedDevices.map { ($0.key.uuidString, $0.value) }), forKey: Self.selectionKey)
+        let snapshot = savedDevices
+        DispatchQueue.main.async { self.selectedDevices = snapshot }
+    }
+
+    func updateClassicConnections(_ names: [String]) {
         queue.async { [weak self] in
             guard let self else { return }
-            let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard self.targetDeviceName != trimmed else { return }
-            self.targetDeviceName = trimmed
-            Logger.bluetooth.info("BLE 目标设备更改为: [\(trimmed.isEmpty ? "自动连接" : trimmed)]")
-
-            // 若指定了目标设备，主动断开当前连接的非目标设备
-            // （与 didDiscover 目标过滤一致用模糊匹配，避免子串目标名误断已连上的正确设备）
-            if !trimmed.isEmpty {
-                for session in self.sessions.values {
-                    if !session.deviceName.localizedCaseInsensitiveContains(trimmed) {
-                        Logger.bluetooth.notice("断开非目标设备: \(session.deviceName)")
-                        self.centralManager?.cancelPeripheralConnection(session.peripheral)
-                    }
+            let previousNames = self.classicDeviceNames
+            self.classicDeviceNames = Set(names)
+            for session in Array(self.sessions.values) where BLEConnectionPolicy.usesClassicConnection(
+                name: session.deviceName, connectedNames: self.classicDeviceNames) {
+                let id = session.identifier
+                session.authorized = false
+                self.requestedDevices.remove(id)
+                self.sessions.removeValue(forKey: id)
+                self.cancelGATTDiscoveryTimeout(identifier: id)
+                self.cancellingDevices.insert(id)
+                self.centralManager?.cancelPeripheralConnection(session.peripheral)
+            }
+            for (id, name) in self.advertisedNames {
+                if BLEConnectionPolicy.usesClassicConnection(name: name, connectedNames: self.classicDeviceNames) {
+                    self.requestedDevices.remove(id)
+                    self.message("已通过经典蓝牙连接，无需 BLE 配对。", for: id)
+                } else if BLEConnectionPolicy.usesClassicConnection(name: name, connectedNames: previousNames) {
+                    self.message(nil, for: id)
                 }
             }
+            self.publishConnections()
+        }
+    }
 
-            if self.isRunning && self.centralManager?.state == .poweredOn {
-                self.startScanning()
+    func connectDevice(_ id: UUID) {
+        let label = BLEConnectionPolicy.hostLabel(Host.current().localizedName ?? "Mac")
+        queue.async { [weak self] in
+            guard let self, self.isRunning else { return }
+            self.hostName = label
+            let name = self.advertisedNames[id] ?? self.savedDevices[id] ?? self.peripherals[id]?.name ?? ""
+            guard !BLEConnectionPolicy.usesClassicConnection(name: name, connectedNames: self.classicDeviceNames) else {
+                self.message("已通过经典蓝牙连接，无需 BLE 配对。", for: id)
+                return
+            }
+            self.requestedDevices.insert(id)
+            self.suspendedDevices.remove(id)
+            self.gattRejectCooldowns.removeValue(forKey: id)
+            if let peripheral = self.peripherals[id] { self.connect(peripheral) }
+            else { self.startScanning() }
+        }
+    }
+
+    func forgetDevice(_ id: UUID) {
+        queue.async { [weak self] in
+            guard let self else { return }
+            self.requestedDevices.remove(id)
+            self.savedDevices.removeValue(forKey: id)
+            self.suspendedDevices.insert(id)
+            self.saveSelection()
+            self.cancelGATTDiscoveryTimeout(identifier: id)
+            if let session = self.sessions.removeValue(forKey: id) {
+                session.authorized = false
+                self.cancellingDevices.insert(id)
+                self.centralManager?.cancelPeripheralConnection(session.peripheral)
+            }
+            self.publishConnections()
+            self.message("已停止自动重连；屏幕绑定需在屏幕解除", for: id)
+        }
+    }
+
+    private func connect(_ peripheral: CBPeripheral) {
+        let id = peripheral.identifier
+        guard mayConnect(id), sessions[id] == nil else { return }
+        if let rejectedAt = gattRejectCooldowns[id], Date().timeIntervalSince1970 - rejectedAt < Self.gattRejectCooldown { return }
+        sessions[id] = BLESession(peripheral: peripheral, name: advertisedNames[id] ?? savedDevices[id] ?? peripheral.name ?? "")
+        peripheral.delegate = self
+        message("正在连接…", for: id)
+        publishConnections()
+        centralManager?.connect(peripheral, options: nil)
+        beginGATTDiscoveryTimeout(identifier: id, duration: 12)
+    }
+
+    private func publishConnections() {
+        let ready = sessions.values.filter(\.isReady)
+        let ids = Set(ready.map(\.identifier))
+        let connectingIDs = Set(sessions.values.filter { !$0.isReady }.map(\.identifier))
+        let names = ready.map(\.deviceName).sorted().joined(separator: ", ")
+        // Bonded peripherals may reconnect without advertising again. Keep their
+        // live session in the list instead of showing a disconnected saved row.
+        let connectedRows = ready.map {
+            BLEDiscoveredDevice(id: $0.identifier, name: $0.deviceName, rssi: 0, isConnected: true)
+        }
+        DispatchQueue.main.async {
+            self.connectedDeviceName = names.isEmpty ? nil : names
+            self.connectingDeviceIDs = connectingIDs
+            for index in self.discoveredDevices.indices {
+                self.discoveredDevices[index].isConnected = ids.contains(self.discoveredDevices[index].id)
+            }
+            for row in connectedRows where !self.discoveredDevices.contains(where: { $0.id == row.id }) {
+                self.discoveredDevices.append(row)
             }
         }
     }
+
+    // MARK: - 控制接口
 
     func rescan() {
         queue.async { [weak self] in
@@ -143,12 +261,13 @@ final class BLESyncService: NSObject, ObservableObject {
     }
 
     func start() {
+        let label = BLEConnectionPolicy.hostLabel(Host.current().localizedName ?? "Mac")
         queue.async { [weak self] in
             guard let self else { return }
             guard !self.isRunning else { return }
             self.isRunning = true
-            self.targetDeviceName = UserSettings.shared.targetBLEDeviceName.trimmingCharacters(in: .whitespacesAndNewlines)
-            Logger.bluetooth.notice("BLE 蓝牙同步服务启动 (CoreBluetooth), 目标设备: [\(self.targetDeviceName.isEmpty ? "自动连接" : self.targetDeviceName)]")
+            self.hostName = label
+            Self.logger.notice("BLE 同步启动，仅重连已选择的副屏")
 
             if self.centralManager == nil {
                 self.centralManager = CBCentralManager(delegate: self, queue: self.queue)
@@ -165,7 +284,7 @@ final class BLESyncService: NSObject, ObservableObject {
             self.isRunning = false
             self.scanTimeoutWorkItem?.cancel()
             self.scanTimeoutWorkItem = nil
-            for identifier in self.gattDiscoveryTimeouts.keys {
+            for identifier in Array(self.gattDiscoveryTimeouts.keys) {
                 self.cancelGATTDiscoveryTimeout(identifier: identifier)
             }
             self.gattRejectCooldowns.removeAll()
@@ -174,6 +293,9 @@ final class BLESyncService: NSObject, ObservableObject {
                 self.centralManager?.cancelPeripheralConnection(session.peripheral)
             }
             self.sessions.removeAll()
+            self.publishConnections()
+            self.requestedDevices.removeAll()
+            self.lastPayloadLine = nil
             DispatchQueue.main.async {
                 self.isScanning = false
                 self.connectedDeviceName = nil
@@ -181,7 +303,7 @@ final class BLESyncService: NSObject, ObservableObject {
                 self.heartbeatTimer?.invalidate()
                 self.heartbeatTimer = nil
             }
-            Logger.bluetooth.notice("BLE 蓝牙同步服务停止")
+            Self.logger.notice("BLE 蓝牙同步服务停止")
         }
     }
 
@@ -219,7 +341,13 @@ final class BLESyncService: NSObject, ObservableObject {
         guard centralManager?.state == .poweredOn else { return }
         scanTimeoutWorkItem?.cancel()
         DispatchQueue.main.async { self.isScanning = true }
-        Logger.bluetooth.info("开始扫描 BLE 副屏设备 (前缀: \(Self.deviceNamePrefix), 目标: \(self.targetDeviceName.isEmpty ? "全部" : self.targetDeviceName))")
+        Self.logger.info("扫描 BLE 副屏；未选择的设备仅展示")
+        if let centralManager {
+            for peripheral in centralManager.retrievePeripherals(withIdentifiers: Array(savedDevices.keys)) {
+                peripherals[peripheral.identifier] = peripheral
+                connect(peripheral)
+            }
+        }
         // 不按 Service UUID 过滤：Android 副屏的 BLE 广播只带本地名称、不含
         // 任何 Service UUID，按 UUID 过滤会导致其永远无法被发现（v0.1.13 回归）。
         // 无关设备由 didDiscover 中的名称前缀守卫过滤。
@@ -242,7 +370,7 @@ final class BLESyncService: NSObject, ObservableObject {
         DispatchQueue.main.async {
             self.isScanning = false
         }
-        Logger.bluetooth.info("BLE 扫描结束 (共发现 \(self.discoveredDevices.count) 台设备)")
+        Self.logger.info("BLE 扫描结束")
     }
 
     private func write(line: String, to session: BLESession) {
@@ -250,19 +378,32 @@ final class BLESyncService: NSObject, ObservableObject {
         let payloadWithNewline = line.hasSuffix("\n") ? line : line + "\n"
         guard let data = payloadWithNewline.data(using: .utf8) else { return }
 
-        // 获取当前外设支持的最大包长 (通常 20 ~ 512 字节)
-        let maxChunk = session.peripheral.maximumWriteValueLength(for: .withoutResponse)
-        var offset = 0
-
-        while offset < data.count {
-            let chunkSize = min(maxChunk, data.count - offset)
-            let chunk = data.subdata(in: offset..<(offset + chunkSize))
-            session.peripheral.writeValue(chunk, for: char, type: .withoutResponse)
-            offset += chunkSize
+        guard session.isReady else { return }
+        let type: CBCharacteristicWriteType = char.properties.contains(.writeWithoutResponse) ? .withoutResponse : .withResponse
+        let maxChunk = max(1, session.peripheral.maximumWriteValueLength(for: type))
+        /* Queue complete frames; flow control prevents dropping or interleaving chunks. */
+        guard session.pendingChunks.count < 256 else { return }
+        for offset in stride(from: 0, to: data.count, by: maxChunk) {
+            session.pendingChunks.append(data.subdata(in: offset..<min(offset + maxChunk, data.count)))
         }
+        flushWrites(session)
+    }
 
-        session.lastWriteTime = Date().timeIntervalSince1970
-        Logger.bluetooth.debug("已向 BLE 副屏 [\(session.deviceName)] 发送数据帧 (\(data.count) bytes)")
+    private func flushWrites(_ session: BLESession) {
+        guard session.isReady, let char = session.rxCharacteristic else { return }
+        let type: CBCharacteristicWriteType = char.properties.contains(.writeWithoutResponse) ? .withoutResponse : .withResponse
+        while !session.pendingChunks.isEmpty {
+            if type == .withoutResponse {
+                guard session.peripheral.canSendWriteWithoutResponse else { return }
+            } else {
+                guard !session.writingWithResponse else { return }
+                session.writingWithResponse = true
+            }
+            let chunk = session.pendingChunks.removeFirst()
+            session.peripheral.writeValue(chunk, for: char, type: type)
+            session.lastWriteTime = Date().timeIntervalSince1970
+            if type == .withResponse { return }
+        }
     }
 
     private func scheduleHeartbeatTimer() {
@@ -278,11 +419,10 @@ final class BLESyncService: NSObject, ObservableObject {
     private func sendHeartbeat() {
         guard isRunning else { return }
 
-        // 若当前未连接任何设备，且不在扫描中，则自动触发后台搜寻
+        // 后台搜寻未连接的已选择副屏，保留 1:N 重连能力
         // （用 centralManager.isScanning 判断 CB 真相，@Published isScanning 经主线程异步易脏读）
-        if sessions.isEmpty && centralManager?.isScanning != true && centralManager?.state == .poweredOn {
+        if centralManager?.isScanning != true && centralManager?.state == .poweredOn {
             startScanning()
-            return
         }
 
         let timestamp = Int(Date().timeIntervalSince1970)
@@ -300,15 +440,20 @@ final class BLESyncService: NSObject, ObservableObject {
 // MARK: - CBCentralManagerDelegate
 
 extension BLESyncService: CBCentralManagerDelegate {
-    func centralManagerDidUpdateState(_ central: CBCentralManager) {
+    nonisolated func centralManagerDidUpdateState(_ central: CBCentralManager) {
         queue.async { [weak self] in
             guard let self else { return }
             if central.state == .poweredOn && self.isRunning {
                 self.startScanning()
             } else if central.state != .poweredOn {
-                Logger.bluetooth.notice("BLE 蓝牙未就绪 (state: \(central.state.rawValue))")
+                Self.logger.notice("BLE 蓝牙未就绪 (state: \(central.state.rawValue))")
                 self.stopScanning()
+                for identifier in Array(self.gattDiscoveryTimeouts.keys) {
+                    self.cancelGATTDiscoveryTimeout(identifier: identifier)
+                }
                 self.sessions.removeAll()
+                self.cancellingDevices.removeAll()
+                self.publishConnections()
                 DispatchQueue.main.async {
                     self.connectedDeviceName = nil
                 }
@@ -316,23 +461,26 @@ extension BLESyncService: CBCentralManagerDelegate {
         }
     }
 
-    func centralManager(
+    nonisolated func centralManager(
         _ central: CBCentralManager,
         didDiscover peripheral: CBPeripheral,
         advertisementData: [String: Any],
         rssi RSSI: NSNumber
     ) {
-        let name = peripheral.name ?? (advertisementData[CBAdvertisementDataLocalNameKey] as? String) ?? ""
+        guard isRunning else { return }
+        let name = (advertisementData[CBAdvertisementDataLocalNameKey] as? String) ?? peripheral.name ?? ""
         guard name.localizedCaseInsensitiveContains(Self.deviceNamePrefix) else { return }
 
         let rssiVal = RSSI.intValue
         let uuid = peripheral.identifier
-        let isConnected = (peripheral.state == .connected)
+        let isConnected = sessions[uuid]?.isReady == true
+        peripherals[uuid] = peripheral
+        advertisedNames[uuid] = name
 
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
-            // 按照设备广播名去重，防止 Android 等设备因 RPA 地址轮转产生多条同名重复项
-            if let idx = self.discoveredDevices.firstIndex(where: { $0.name == name || $0.id == uuid }) {
+            // 同名设备保持独立；UUID 只用于本机选择，不作为认证凭据。
+            if let idx = self.discoveredDevices.firstIndex(where: { $0.id == uuid }) {
                 self.discoveredDevices[idx] = BLEDiscoveredDevice(id: uuid, name: name, rssi: rssiVal, isConnected: isConnected)
             } else {
                 self.discoveredDevices.append(BLEDiscoveredDevice(id: uuid, name: name, rssi: rssiVal, isConnected: isConnected))
@@ -340,93 +488,89 @@ extension BLESyncService: CBCentralManagerDelegate {
             }
         }
 
-        // 目标过滤：如果指定了设备名，则只连接名称包含目标的设备
-        // （模糊匹配：Android 广播名可能带后缀，如 AgentRing-NX513J 与用户填写的子串）
-        if !targetDeviceName.isEmpty {
-            guard name.localizedCaseInsensitiveContains(targetDeviceName) else {
-                return
-            }
-        }
+        guard mayConnect(uuid) else { return }
 
         // 冷却黑名单：近期被判定无 GATT 串口的设备不再自动连接，只保留在列表里
         // （显式指定目标名的设备也遵守冷却，避免对无 GATT 设备死磕）
         if let rejectedAt = gattRejectCooldowns[uuid],
            Date().timeIntervalSince1970 - rejectedAt < Self.gattRejectCooldown {
             let remaining = Int(Self.gattRejectCooldown - (Date().timeIntervalSince1970 - rejectedAt))
-            Logger.bluetooth.notice("BLE 设备 [\(name)] 处于误连冷却期（剩余 \(remaining)s），跳过自动连接")
+            Self.logger.notice("BLE 设备 [\(name)] 处于误连冷却期（剩余 \(remaining)s），跳过自动连接")
             return
         }
         gattRejectCooldowns.removeValue(forKey: uuid)
 
-        if sessions[uuid] == nil {
-            Logger.bluetooth.notice("发现匹配的 AgentRing BLE 副屏设备: \(name) [\(uuid.uuidString), RSSI: \(rssiVal)]")
-            let session = BLESession(peripheral: peripheral)
-            sessions[uuid] = session
-            peripheral.delegate = self
-            central.connect(peripheral, options: nil)
-        }
+        connect(peripheral)
     }
 
-    func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
+    nonisolated func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
+        guard mayConnect(peripheral.identifier), sessions[peripheral.identifier] != nil else {
+            central.cancelPeripheralConnection(peripheral)
+            return
+        }
         let name = peripheral.name ?? peripheral.identifier.uuidString
-        Logger.bluetooth.notice("已连接 BLE 设备: \(name)，正在发现服务...")
+        Self.logger.notice("已连接 BLE 设备: \(name)，正在发现服务...")
         // 注意：此时还不能当「已连接副屏」用——GATT 串口未就绪，可能是误连的
         // 无 GATT 设备（如 Android 经典副屏）。等 didDiscoverCharacteristicsFor
         // 找到可写特征后才更新 connectedDeviceName。
-        stopScanning()
         beginGATTDiscoveryTimeout(identifier: peripheral.identifier)
         peripheral.discoverServices([Self.serviceUUID])
     }
 
-    func centralManager(_ central: CBCentralManager, didFailToConnect peripheral: CBPeripheral, error: Error?) {
+    nonisolated func centralManager(_ central: CBCentralManager, didFailToConnect peripheral: CBPeripheral, error: Error?) {
+        guard sessions[peripheral.identifier] != nil else { cancellingDevices.remove(peripheral.identifier); return }
         let name = peripheral.name ?? peripheral.identifier.uuidString
-        Logger.bluetooth.warning("连接 BLE 副屏失败: \(name), error: \(String(describing: error))")
-        sessions.removeValue(forKey: peripheral.identifier)
-        cancelGATTDiscoveryTimeout(identifier: peripheral.identifier)
-        DispatchQueue.main.async { [weak self] in
-            guard let self else { return }
-            if let idx = self.discoveredDevices.firstIndex(where: { $0.id == peripheral.identifier || $0.name == name }) {
-                self.discoveredDevices[idx].isConnected = false
-            }
-        }
+        Self.logger.warning("连接 BLE 副屏失败: \(name), error: \(String(describing: error))")
+        let id = peripheral.identifier
+        requestedDevices.remove(id)
+        let suspend = BLEConnectionPolicy.shouldSuspendAfterFailure(selectedBefore: savedDevices[id] != nil, authenticationStarted: false)
+        if suspend { suspendedDevices.insert(id) }
+        else { gattRejectCooldowns[id] = Date().timeIntervalSince1970 }
+        sessions.removeValue(forKey: id)
+        cancellingDevices.remove(id)
+        cancelGATTDiscoveryTimeout(identifier: id)
+        message(suspend ? "连接失败，请在屏幕开启配对后重试" : "设备暂时不可用，等待自动重连", for: id)
+        publishConnections()
     }
 
-    func centralManager(_ central: CBCentralManager, didDisconnectPeripheral peripheral: CBPeripheral, error: Error?) {
-        let name = peripheral.name ?? peripheral.identifier.uuidString
-        Logger.bluetooth.notice("BLE 副屏已断开连接: \(name)")
-        sessions.removeValue(forKey: peripheral.identifier)
-        cancelGATTDiscoveryTimeout(identifier: peripheral.identifier)
-        DispatchQueue.main.async { [weak self] in
-            guard let self else { return }
-            if self.connectedDeviceName == name {
-                self.connectedDeviceName = nil
-            }
-            if let idx = self.discoveredDevices.firstIndex(where: { $0.id == peripheral.identifier || $0.name == name }) {
-                self.discoveredDevices[idx].isConnected = false
-            }
+    nonisolated func centralManager(_ central: CBCentralManager, didDisconnectPeripheral peripheral: CBPeripheral, error: Error?) {
+        let id = peripheral.identifier
+        let wasReady = sessions[id]?.authorized == true
+        let authenticationStarted = sessions[id]?.authenticationStarted == true
+        let wasCancelled = cancellingDevices.remove(id) != nil
+        sessions.removeValue(forKey: id)
+        cancelGATTDiscoveryTimeout(identifier: id)
+        if isRunning && !wasReady && !wasCancelled && (requestedDevices.contains(id) || savedDevices[id] != nil) {
+            requestedDevices.remove(id)
+            let suspend = BLEConnectionPolicy.shouldSuspendAfterFailure(selectedBefore: savedDevices[id] != nil, authenticationStarted: authenticationStarted)
+            if suspend { suspendedDevices.insert(id) }
+            else { gattRejectCooldowns[id] = Date().timeIntervalSince1970 }
+            message(suspend ? "未完成验证；在屏幕开启配对或解除旧绑定后重试" : "设备暂时不可用，等待自动重连", for: id)
+        } else if wasReady {
+            message("已断开，等待自动重连", for: id)
         }
-        if isRunning, sessions.isEmpty {
-            startScanning()
-        }
+        publishConnections()
+        if isRunning, !wasCancelled { startScanning() }
     }
+
 }
 
 // MARK: - CBPeripheralDelegate
 
 extension BLESyncService: CBPeripheralDelegate {
-    func peripheral(_ peripheral: CBPeripheral, didDiscoverServices error: Error?) {
-        guard let session = sessions[peripheral.identifier] else { return }
+    nonisolated func peripheral(_ peripheral: CBPeripheral, didDiscoverServices error: Error?) {
+        guard isRunning, mayConnect(peripheral.identifier), let session = sessions[peripheral.identifier] else { return }
 
         // 服务发现失败：同一条拒绝路径，不能静默挂死
         if error != nil {
-            Logger.bluetooth.notice("BLE 设备 [\(session.deviceName)] 服务发现失败: \(String(describing: error))，断开并冷却")
+            Self.logger.notice("BLE 设备 [\(session.deviceName)] 服务发现失败: \(String(describing: error))，断开并冷却")
             rejectSession(session)
             return
         }
 
         let services = peripheral.services?.filter { $0.uuid == Self.serviceUUID } ?? []
         guard !services.isEmpty else {
-            Logger.bluetooth.notice("BLE 设备 [\(session.deviceName)] 无 AgentRing UART 服务，判定为非串口设备，断开并冷却")
+            Self.logger.notice("BLE 设备 [\(session.deviceName)] 无 AgentRing UART 服务，判定为非串口设备，断开并冷却")
             rejectSession(session)
             return
         }
@@ -438,50 +582,130 @@ extension BLESyncService: CBPeripheralDelegate {
         }
     }
 
-    func peripheral(_ peripheral: CBPeripheral, didDiscoverCharacteristicsFor service: CBService, error: Error?) {
-        guard let session = sessions[peripheral.identifier] else { return }
+    nonisolated func peripheral(_ peripheral: CBPeripheral, didDiscoverCharacteristicsFor service: CBService, error: Error?) {
+        guard isRunning, mayConnect(peripheral.identifier), let session = sessions[peripheral.identifier] else { return }
 
-        // 特征发现失败也计入"该服务收齐"，避免计数永不归零挂死
-        if let characteristics = error == nil ? service.characteristics : nil {
-            for char in characteristics {
-                // 支持写入的特征值作为 RX 端口
-                if char.properties.contains(.writeWithoutResponse) || char.properties.contains(.write) {
-                    session.rxCharacteristic = char
-                    cancelGATTDiscoveryTimeout(identifier: session.identifier)
-                    Logger.bluetooth.notice("BLE 副屏 [\(session.deviceName)] 串口就绪，准备推送数据")
-                    markConnected(session)
-                    self.pushInitialPayload(to: session)
-                    return
-                }
+        if error == nil, let characteristics = service.characteristics {
+            session.rxCharacteristic = characteristics.first {
+                $0.uuid == Self.rxCharUUID && ($0.properties.contains(.writeWithoutResponse) || $0.properties.contains(.write))
             }
+            session.bindingCharacteristic = characteristics.first { $0.uuid == Self.bindingCharUUID }
         }
-
         session.pendingServiceCount = max(0, session.pendingServiceCount - 1)
-        if session.pendingServiceCount == 0 && session.rxCharacteristic == nil {
-            // 所有服务发现收齐仍无可写特征：误连设备，断开 + 冷却 + 重扫
-            Logger.bluetooth.notice("BLE 设备 [\(session.deviceName)] 未发现可写 GATT 特征（误连），断开并继续扫描")
-            rejectSession(session)
+        guard session.pendingServiceCount == 0 else { return }
+        guard session.rxCharacteristic != nil else {
+            rejectSession(session, reason: "未找到副屏数据通道")
+            return
         }
+        if let binding = session.bindingCharacteristic {
+            guard binding.properties.contains(.read), binding.properties.contains(.write) else {
+                rejectSession(session, reason: "绑定协议不完整，请升级固件")
+                return
+            }
+            beginGATTDiscoveryTimeout(identifier: session.identifier, duration: 90)
+            message("请在 Mac 系统配对框输入屏幕验证码", for: session.identifier)
+            session.authenticationStarted = true
+            // Explicitly ask the peripheral to initiate SMP. A protected read
+            // alone can fail immediately on macOS without presenting pairing UI.
+            peripheral.writeValue(Data("{\"type\":\"authenticate\"}".utf8), for: binding, type: .withResponse)
+        } else if BLEConnectionPolicy.requiresBinding(name: session.deviceName) {
+            rejectSession(session, reason: "此 LCD 固件不支持安全绑定，请升级固件")
+        } else {
+            finishAuthorization(session)
+        }
+    }
+
+    nonisolated func peripheral(_ peripheral: CBPeripheral, didUpdateValueFor characteristic: CBCharacteristic, error: Error?) {
+        guard isRunning, mayConnect(peripheral.identifier), let session = sessions[peripheral.identifier],
+              characteristic.uuid == Self.bindingCharUUID else { return }
+        if let error {
+            let detail = error as NSError
+            Self.logger.warning("BLE identity read failed: domain=\(detail.domain, privacy: .public), code=\(detail.code)")
+            if session.bindingHandshake.stage == .readIdentity &&
+                BLEBindingHandshake.canWaitForEncryption(isATTError: detail.domain == CBATTErrorDomain, code: detail.code) {
+                scheduleBindingRead(session)
+            } else {
+                rejectSession(session, reason: "系统配对未完成；请在屏幕开启配对后重试")
+            }
+            return
+        }
+        guard let data = characteristic.value, BLEConnectionPolicy.validBindingResponse(data),
+              session.bindingHandshake.verifyIdentity() else {
+            rejectSession(session, reason: "绑定协议校验失败，请升级固件后重试")
+            return
+        }
+        guard let hello = try? JSONSerialization.data(withJSONObject: ["hostName": hostName]) else { return }
+        peripheral.writeValue(hello, for: characteristic, type: .withResponse)
+    }
+
+    nonisolated private func scheduleBindingRead(_ session: BLESession) {
+        let id = session.identifier
+        let generation = session.generation
+        queue.asyncAfter(deadline: .now() + 1) { [weak self] in
+            guard let self, self.mayConnect(id), let current = self.sessions[id],
+                  current.generation == generation, current.bindingHandshake.stage == .readIdentity,
+                  let characteristic = current.bindingCharacteristic else { return }
+            current.peripheral.readValue(for: characteristic)
+        }
+    }
+
+    nonisolated func peripheral(_ peripheral: CBPeripheral, didWriteValueFor characteristic: CBCharacteristic, error: Error?) {
+        guard isRunning, mayConnect(peripheral.identifier), let session = sessions[peripheral.identifier] else { return }
+        guard error == nil else {
+            let detail = error! as NSError
+            Self.logger.warning("BLE write failed: characteristic=\(characteristic.uuid.uuidString, privacy: .public), domain=\(detail.domain, privacy: .public), code=\(detail.code)")
+            rejectSession(session, reason: "副屏拒绝写入；请检查屏幕绑定状态后重试")
+            return
+        }
+        if characteristic.uuid == Self.bindingCharUUID {
+            let previousStage = session.bindingHandshake.stage
+            if session.bindingHandshake.acknowledgeWrite() {
+                finishAuthorization(session)
+            } else if previousStage == .requestSecurity {
+                message("请在 macOS 系统配对框输入 LCD 已显示的六位码", for: session.identifier)
+                scheduleBindingRead(session)
+            }
+        } else if characteristic.uuid == Self.rxCharUUID {
+            session.writingWithResponse = false
+            flushWrites(session)
+        }
+    }
+
+    nonisolated func peripheralIsReady(toSendWriteWithoutResponse peripheral: CBPeripheral) {
+        guard let session = sessions[peripheral.identifier] else { return }
+        flushWrites(session)
+    }
+
+    nonisolated private func finishAuthorization(_ session: BLESession) {
+        guard mayConnect(session.identifier) else { return }
+        guard session.bindingCharacteristic == nil || session.bindingHandshake.stage == .ready else { return }
+        session.authorized = true
+        requestedDevices.remove(session.identifier)
+        savedDevices[session.identifier] = session.deviceName
+        saveSelection()
+        cancelGATTDiscoveryTimeout(identifier: session.identifier)
+        message(session.bindingCharacteristic == nil ? "已连接（旧协议）" : "已绑定，正在同步本机数据", for: session.identifier)
+        publishConnections()
+        pushInitialPayload(to: session)
     }
 
     /// 拒绝路径：记冷却黑名单、断开误连设备并清理会话
     /// cancelPeripheralConnection 的 didDisconnect 回调不保证到达，不能只依赖它重扫
-    private func rejectSession(_ session: BLESession) {
+    nonisolated private func rejectSession(_ session: BLESession, reason: String = "服务发现失败，请刷新后重试", suspend: Bool = true) {
+        session.authorized = false
+        requestedDevices.remove(session.identifier)
+        if suspend { suspendedDevices.insert(session.identifier) }
+        message(reason, for: session.identifier)
         gattRejectCooldowns[session.identifier] = Date().timeIntervalSince1970
         sessions.removeValue(forKey: session.identifier)
         cancelGATTDiscoveryTimeout(identifier: session.identifier)
-        let deviceName = session.deviceName
+        publishConnections()
+        cancellingDevices.insert(session.identifier)
         session.peripheral.delegate = nil
         centralManager?.cancelPeripheralConnection(session.peripheral)
-        DispatchQueue.main.async { [weak self] in
-            guard let self else { return }
-            if self.connectedDeviceName == deviceName {
-                self.connectedDeviceName = nil
-            }
-        }
-        // 会话已清空且未在扫描（didConnect 时停过）：立即恢复扫描，不留接力空窗
+        // 失败后保留扫描能力，失败设备需用户明确重试。
         if isRunning, sessions.isEmpty, centralManager?.isScanning != true {
-            Logger.bluetooth.notice("拒绝后恢复扫描")
+            Self.logger.notice("拒绝后恢复扫描")
             startScanning()
         }
     }
@@ -489,42 +713,32 @@ extension BLESyncService: CBPeripheralDelegate {
     // MARK: - GATT 发现超时看门狗
 
     /// didConnect 后武装：服务/特征发现回调若 6s 内不来，判定挂死走拒绝路径
-    private func beginGATTDiscoveryTimeout(identifier: UUID) {
+    nonisolated private func beginGATTDiscoveryTimeout(identifier: UUID, duration: TimeInterval = 6) {
         cancelGATTDiscoveryTimeout(identifier: identifier)
         let work = DispatchWorkItem { [weak self] in
             guard let self, let session = self.sessions[identifier] else { return }
-            guard session.rxCharacteristic == nil else { return }
-            Logger.bluetooth.notice("BLE 设备 [\(session.deviceName)] GATT 服务发现超时（\(Int(Self.gattDiscoveryTimeout))s）无回调，断开并冷却")
-            self.rejectSession(session)
+            guard !session.isReady else { return }
+            Self.logger.notice("BLE 设备 [\(session.deviceName)] 连接或验证超时，断开并等待手动重试")
+            let suspend = BLEConnectionPolicy.shouldSuspendAfterFailure(
+                selectedBefore: self.savedDevices[identifier] != nil, authenticationStarted: session.authenticationStarted)
+            self.rejectSession(session, reason: suspend ? "连接或配对超时，请在屏幕开启配对后重试" : "设备暂时不可用，等待自动重连", suspend: suspend)
         }
         gattDiscoveryTimeouts[identifier] = work
-        queue.asyncAfter(deadline: .now() + Self.gattDiscoveryTimeout, execute: work)
+        queue.asyncAfter(deadline: .now() + duration, execute: work)
     }
 
-    private func cancelGATTDiscoveryTimeout(identifier: UUID) {
+    nonisolated private func cancelGATTDiscoveryTimeout(identifier: UUID) {
         gattDiscoveryTimeouts[identifier]?.cancel()
         gattDiscoveryTimeouts.removeValue(forKey: identifier)
     }
 
-    /// GATT 串口就绪：此刻才标记为已连接副屏
-    private func markConnected(_ session: BLESession) {
-        let name = session.deviceName
-        DispatchQueue.main.async { [weak self] in
-            guard let self else { return }
-            self.connectedDeviceName = name
-            if let idx = self.discoveredDevices.firstIndex(where: { $0.id == session.identifier || $0.name == name }) {
-                self.discoveredDevices[idx].isConnected = true
-            }
-        }
-    }
-
-    private func pushInitialPayload(to session: BLESession) {
+    nonisolated private func pushInitialPayload(to session: BLESession) {
         if let line = lastPayloadLine {
             write(line: line, to: session)
             return
         }
         DispatchQueue.main.async { [weak self] in
-            guard let dataManager = (NSApp.delegate as? AppDelegate)?.menuBarManager?.dataManagerForBluetooth else {
+            guard let dataManager = AppDelegate.shared?.menuBarManager?.dataManagerForBluetooth else {
                 return
             }
             self?.pushPayload(

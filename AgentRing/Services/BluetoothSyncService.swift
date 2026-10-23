@@ -164,7 +164,7 @@ final class BluetoothSyncService: NSObject, ObservableObject {
             return
         }
         DispatchQueue.main.async { [weak self] in
-            guard let dataManager = (NSApp.delegate as? AppDelegate)?.menuBarManager?.dataManagerForBluetooth else {
+            guard let dataManager = AppDelegate.shared?.menuBarManager?.dataManagerForBluetooth else {
                 return
             }
             self?.pushPayload(
@@ -404,6 +404,7 @@ final class BluetoothSyncService: NSObject, ObservableObject {
             .sorted()
         DispatchQueue.main.async { [weak self] in
             self?.connectedClassicDeviceNames = names
+            BLESyncService.shared.updateClassicConnections(names)
         }
     }
 

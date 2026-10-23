@@ -489,16 +489,16 @@ final class UserSettings: ObservableObject {
         }
     }
 
-    /// BLE 目标副屏设备名称（空为自动选择最近设备）
+    /// 旧版 BLE 名称偏好；新版本按用户明确选择的外设 UUID 重连。
     @Published var targetBLEDeviceName: String {
         didSet {
             defaults.set(targetBLEDeviceName, forKey: "targetBLEDeviceName")
-            BLESyncService.shared.setTargetDeviceName(targetBLEDeviceName)
+            // Legacy preference retained for migration only; it never authorizes a BLE connection.
         }
     }
 
     private func postBluetoothImmediatePush() {
-        let dataManager = (NSApp.delegate as? AppDelegate)?.menuBarManager?.dataManagerForBluetooth
+        let dataManager = AppDelegate.shared?.menuBarManager?.dataManagerForBluetooth
         let codex = dataManager?.codexData
         let cursor = dataManager?.cursorData
         let antigravity = dataManager?.antigravityData

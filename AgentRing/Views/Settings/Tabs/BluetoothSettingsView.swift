@@ -7,6 +7,7 @@
 
 import SwiftUI
 import AppKit
+import OSLog
 
 struct BluetoothSettingsView: View {
     @ObservedObject private var settings = UserSettings.shared
@@ -50,43 +51,31 @@ struct BluetoothSettingsView: View {
                         .padding(.vertical, 2)
                         .padding(.leading, 20)
 
-                    // 目标设备选择器
-                    HStack(spacing: 8) {
-                        Text("目标副屏:")
-                            .font(.callout)
-
-                        Picker("", selection: $settings.targetBLEDeviceName) {
-                            Text("自动连接最近设备 (默认)").tag("")
-
-                            ForEach(bleService.discoveredDevices) { device in
-                                Text("\(device.name) (\(device.rssi) dBm)\(deviceTag(device.name))")
-                                    .tag(device.name)
-                            }
-
-                            if !settings.targetBLEDeviceName.isEmpty &&
-                               !bleService.discoveredDevices.contains(where: { $0.name == settings.targetBLEDeviceName }) {
-                                Text("\(settings.targetBLEDeviceName) (未发现)").tag(settings.targetBLEDeviceName)
-                            }
-                        }
-                        .labelsHidden()
-                        .frame(maxWidth: 240)
-
-                        if bleService.isScanning {
-                            ProgressView()
-                                .scaleEffect(0.6)
-                                .frame(width: 16, height: 16)
-                        } else {
-                            Button {
-                                bleService.rescan()
-                            } label: {
-                                Image(systemName: "arrow.clockwise")
-                                    .font(.caption)
-                            }
-                            .buttonStyle(.plain)
-                            .help("刷新附近设备")
-                        }
+                    HStack {
+                        Text("副屏设备").font(.callout)
+                        Spacer()
+                        if bleService.isScanning { ProgressView().controlSize(.small) }
+                        Button("扫描设备") { bleService.rescan() }
+                            .disabled(bleService.isScanning)
                     }
                     .padding(.leading, 20)
+
+                    Text("首次连接：LCD「连接管理」→「开始配对」会立即显示六位码。再点本机的「连接并配对」，在 macOS 系统配对框输入此码。")
+                        .font(.caption).foregroundColor(.secondary)
+                        .padding(.leading, 20)
+
+                    ForEach(visibleBLEDevices) { device in
+                        deviceRow(name: device.name, bleDevice: device)
+                    }
+                    ForEach(classicOnlyConnections, id: \.self) { name in
+                        deviceRow(name: name, bleDevice: nil)
+                    }
+                    if visibleBLEDevices.isEmpty && classicOnlyConnections.isEmpty {
+                        Text("尚未发现副屏，请确认设备已开机。")
+                            .font(.caption).foregroundColor(.secondary).padding(.leading, 20)
+                    }
+                    Text("「忘记」仅停止此应用自动重连。换绑 Mac 请在 LCD 解除绑定；如系统保留旧配对，请在 macOS 蓝牙设置忽略该设备。")
+                        .font(.caption).foregroundColor(.secondary).padding(.leading, 20)
 
                     // 连接状态指示与即时推流（经典 + BLE 两路分别展示）
                     HStack(spacing: 8) {
@@ -132,6 +121,46 @@ struct BluetoothSettingsView: View {
                 }
             }
         }
+    }
+
+    private func deviceRow(name: String, bleDevice: BLEDiscoveredDevice?) -> some View {
+        let state = BluetoothDeviceConnectionState.resolve(
+            classicConnected: BLEConnectionPolicy.usesClassicConnection(name: name, connectedNames: Set(classicService.connectedClassicDeviceNames)),
+            bleConnected: bleDevice?.isConnected == true,
+            connecting: bleDevice.map { bleService.connectingDeviceIDs.contains($0.id) } ?? false)
+        let selected = bleDevice.map { bleService.selectedDevices[$0.id] != nil } ?? false
+        let diagnostic = bleDevice.flatMap { bleService.deviceMessages[$0.id] }
+        return VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(name).font(.callout)
+                    if state == .classicConnected {
+                        Text("经典蓝牙 · SPP").font(.caption).foregroundColor(.secondary)
+                    } else if let device = bleDevice {
+                        Text("BLE · ID: \(device.id.uuidString.prefix(8)) · \(device.rssi == 0 ? (device.isConnected ? "信号未知" : "未发现") : "\(device.rssi) dBm")")
+                            .font(.caption).foregroundColor(.secondary)
+                    }
+                }
+                Spacer()
+                if state == .classicConnected || state == .bleConnected {
+                    Button("已连接") {}.disabled(true)
+                } else if state == .connecting {
+                    ProgressView().controlSize(.small)
+                    Button("连接中…") {}.disabled(true)
+                } else if state.canConnectBLE, let device = bleDevice {
+                    Button(selected ? "重连" : (BLEConnectionPolicy.requiresBinding(name: name) ? "连接并配对" : "连接")) {
+                        bleService.connectDevice(device.id)
+                    }
+                }
+                if let device = bleDevice, selected || state == .bleConnected {
+                    Button(state == .classicConnected ? "忘记 BLE" : "忘记") { bleService.forgetDevice(device.id) }
+                }
+            }
+            if let message = state.statusMessage(diagnostic: diagnostic) {
+                Text(message).font(.caption).foregroundColor(.secondary)
+            }
+        }
+        .padding(.leading, 20)
     }
 
     // MARK: - 开源副屏项目
@@ -203,15 +232,18 @@ struct BluetoothSettingsView: View {
 
     // MARK: - 连接状态汇总
 
-    /// 设备在 Picker 里的通道/状态标注：经典已连 > BLE 已连 > 无标注
-    private func deviceTag(_ name: String) -> String {
-        if classicService.connectedClassicDeviceNames.contains(name) {
-            return " [经典·已连接]"
+    private var visibleBLEDevices: [BLEDiscoveredDevice] {
+        var devices = bleService.discoveredDevices
+        for (id, name) in bleService.selectedDevices where !devices.contains(where: { $0.id == id }) {
+            devices.append(BLEDiscoveredDevice(id: id, name: name, rssi: 0, isConnected: false))
         }
-        if bleService.connectedDeviceName == name {
-            return " [BLE·已连接]"
+        return devices.sorted { $0.name == $1.name ? $0.id.uuidString < $1.id.uuidString : $0.name < $1.name }
+    }
+
+    private var classicOnlyConnections: [String] {
+        classicService.connectedClassicDeviceNames.filter { name in
+            !visibleBLEDevices.contains { BLEConnectionPolicy.usesClassicConnection(name: $0.name, connectedNames: [name]) }
         }
-        return ""
     }
 
     /// 经典已连接副屏的状态行（如 "经典: AgentRing-vivoX21A"）
@@ -227,14 +259,20 @@ struct BluetoothSettingsView: View {
     // MARK: - 手动推流方法
 
     private func manualPushData() {
-        guard let dataManager = (NSApp.delegate as? AppDelegate)?.menuBarManager?.dataManagerForBluetooth else {
+        guard let dataManager = AppDelegate.shared?.menuBarManager?.dataManagerForBluetooth else {
             return
         }
+        classicService.pushPayload(
+            codexUsageData: dataManager.codexData,
+            cursorUsageData: dataManager.cursorData,
+            antigravityUsageData: dataManager.antigravityData
+        )
         bleService.pushPayload(
             codexUsageData: dataManager.codexData,
             cursorUsageData: dataManager.cursorData,
             antigravityUsageData: dataManager.antigravityData
         )
+        Logger.bluetooth.info("手动向经典蓝牙与 BLE 副屏推送当前用量")
         justPushed = true
         DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
             justPushed = false

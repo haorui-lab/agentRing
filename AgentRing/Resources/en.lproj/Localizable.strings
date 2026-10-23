@@ -440,9 +440,9 @@
 
 // MARK: - Bluetooth Sync
 "bluetooth.section" = "Bluetooth Display";
-"bluetooth.hint" = "Push usage live to a paired Android companion display";
+"bluetooth.hint" = "Sync local usage to Android or ESP32 companion displays";
 "bluetooth.enable" = "Enable Bluetooth Display Sync";
-"bluetooth.description" = "Streams provider quotas to the agentRing-Android companion display over Bluetooth. Pair your phone with the Mac in System Settings first, and keep the companion app running.";
+"bluetooth.description" = "For ESP32 LCD, bind this Mac using the steps below. For classic Bluetooth Android displays, pair in System Settings first and keep the companion app running.";
 "notification.warning_title" = "Usage Warning";
 "notification.warning_body" = "%@ has reached %d%% usage";
 "notification.reset_title" = "Usage Reset";

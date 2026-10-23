@@ -83,7 +83,7 @@ A low-power e-paper desk gadget. Built for a 4.2" black/white/red panel (400×30
 
 ### [agentRing-ESP32-LCD](https://github.com/haorui-lab/agentRing-ESP32-LCD)
 
-Firmware for an ESP32-P4 7" 1024×600 IPS capacitive panel (Waveshare), rendered with LVGL 9. Connects over BLE 5.0 GATT as soon as it powers on, or over USB-C serial — no manual pairing in System Settings.
+Firmware for an ESP32-P4 7" 1024×600 IPS capacitive panel (Waveshare), rendered with LVGL 9. Connects over BLE 5.0 GATT after a one-time screen-confirmed Mac pairing, then reconnects automatically; USB-C serial is also supported. Open Connection Management on the LCD to pair or change the bound Mac.
 
 Building your own display? Frame format and connection rules live in [`docs/BLUETOOTH_PROTOCOL.md`](docs/BLUETOOTH_PROTOCOL.md). Additional hardware ports are welcome.
 

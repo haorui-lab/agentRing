@@ -54,6 +54,9 @@ jobs:
       - name: Validate Cursor login navigation
         run: bash Scripts/test-cursor-login-navigation.sh
 
+      - name: Validate BLE binding policy
+        run: bash Scripts/test-ble-binding.sh
+
       - name: Validate ring display logic
         run: bash Scripts/test-ring-display.sh
 
