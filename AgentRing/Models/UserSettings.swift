@@ -337,6 +337,9 @@ final class UserSettings: ObservableObject {
     func applyAntigravityCredentialsPresent(_ present: Bool) {
         if antigravityCredentialsPresent != present {
             antigravityCredentialsPresent = present
+            if antigravityEnabled {
+                postAccountChanged(provider: .antigravity)
+            }
         }
     }
 
@@ -749,6 +752,10 @@ final class UserSettings: ObservableObject {
 
         syncLaunchAtLoginStatus()
         applyAppearance()
+
+        let antigravityHint = AntigravityAPIService.hasLocalOAuthCredentialsHint()
+        antigravityCredentialsPresent = antigravityHint.present
+        antigravityAccountEmail = antigravityHint.email
 
         // 异步探测 Antigravity 凭证，避免首次打开用量弹层时在主线程敲钥匙串
         AntigravityAPIService.warmCredentialsCache()

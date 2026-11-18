@@ -47,6 +47,18 @@ import Foundation
         let label = BLEConnectionPolicy.hostLabel(String(repeating: "郝瑞的 Mac", count: 30) + "\n\u{0000}")
         check(label.utf8.count <= 64 && !label.contains("\n"), "Host labels remain valid bounded UTF-8")
         check(BLEConnectionPolicy.hostLabel("\n\r") == "Mac", "Empty sanitized label has a fallback")
+        let knownMAC = "D8:55:A3:41:24:86"
+        check(!BLEConnectionPolicy.isClassicBluetoothCandidate(name: "AgentRing-LCD-C361", address: "58:E6:C5:E2:B0:52", knownDisplayMAC: knownMAC), "BLE-only LCD must never be a Classic BT candidate")
+        check(!BLEConnectionPolicy.isClassicBluetoothCandidate(name: "AgentRing-ESP32-LCD", address: knownMAC, knownDisplayMAC: knownMAC), "BLE-only ESP32-LCD must be excluded even if MAC matches")
+        check(BLEConnectionPolicy.isClassicBluetoothCandidate(name: "AgentRing-vivoX21A", address: "44:9E:F9:E6:5A:6E", knownDisplayMAC: knownMAC), "Classic Android display remains a Classic BT candidate")
+        check(BLEConnectionPolicy.isClassicBluetoothCandidate(name: "Z9 mini", address: "d8-55-a3-41-24-86", knownDisplayMAC: knownMAC), "Known display MAC remains a Classic BT candidate")
+        check(!BLEConnectionPolicy.isClassicBluetoothCandidate(name: "AirPods Pro", address: "2C:76:00:D5:49:CC", knownDisplayMAC: knownMAC), "Unrelated devices are excluded")
+        check(BLEConnectionPolicy.classicReconnectCooldown(consecutiveFailures: 0) == 0, "Zero failures has zero cooldown")
+        check(BLEConnectionPolicy.classicReconnectCooldown(consecutiveFailures: -1) == 0, "Negative failures has zero cooldown")
+        let expectedBackoffs: [(Int, TimeInterval)] = [(1, 10), (2, 20), (3, 40), (4, 80), (5, 160), (6, 300), (10, 300)]
+        for (failures, expected) in expectedBackoffs {
+            check(BLEConnectionPolicy.classicReconnectCooldown(consecutiveFailures: failures) == expected, "Classic reconnect backoff for failure \(failures)")
+        }
         print("PASS: BLE selection, retries, handshake stages, security waits, classic/BLE row states, LCD downgrade and UTF-8 labels")
     }
 }

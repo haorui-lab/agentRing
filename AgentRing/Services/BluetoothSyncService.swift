@@ -49,6 +49,8 @@ final class BluetoothSyncService: NSObject, ObservableObject {
         var isConnecting = false
         var isQueryingSDP = false
         var lastWriteTime: TimeInterval = 0
+        var consecutiveFailures: Int = 0
+        var nextRetryTime: TimeInterval = 0
         var connectTimeoutWorkItem: DispatchWorkItem?
 
         var isConnected: Bool {
@@ -68,6 +70,7 @@ final class BluetoothSyncService: NSObject, ObservableObject {
     // MARK: - 状态
 
     private(set) var isRunning = false
+    private var isSuspendedForSystemState = false
 
     /// 多副屏连接池，Key 为标准化的设备地址（去掉分隔符，小写）
     private var sessions: [String: DisplaySession] = [:]
@@ -76,6 +79,9 @@ final class BluetoothSyncService: NSObject, ObservableObject {
     private var lastPayloadLine: String?
     private var sdpQueryCompletions: [String: (BluetoothRFCOMMChannelID?) -> Void] = [:]
     private var wakeObserver: NSObjectProtocol?
+    private var sleepObserver: NSObjectProtocol?
+    private var screenLockObserver: NSObjectProtocol?
+    private var screenUnlockObserver: NSObjectProtocol?
 
     private let queue = DispatchQueue(label: "app.agentring.bluetooth")
 
@@ -91,8 +97,9 @@ final class BluetoothSyncService: NSObject, ObservableObject {
             guard let self else { return }
             guard !self.isRunning else { return }
             self.isRunning = true
+            self.isSuspendedForSystemState = false
             Logger.bluetooth.notice("蓝牙同步服务启动（1:N 多副屏模式）")
-            self.setupWakeObserver()
+            self.setupSystemStateObservers()
             self.scheduleReconnectTimer(fireImmediately: true)
         }
     }
@@ -102,43 +109,119 @@ final class BluetoothSyncService: NSObject, ObservableObject {
         queue.async { [weak self] in
             guard let self else { return }
             self.isRunning = false
-            self.removeWakeObserver()
+            self.isSuspendedForSystemState = false
+            self.removeSystemStateObservers()
             self.teardownAll()
             self.sessions.removeAll()
             self.publishConnectedClassicDevices()
-            self.reconnectTimer?.invalidate()
-            self.reconnectTimer = nil
+            self.invalidateReconnectTimer()
             Logger.bluetooth.notice("蓝牙同步服务停止")
         }
     }
 
-    // MARK: - 休眠唤醒监听
+    /// 手动刷新/重新扫描时清空退避冷却并立即重连
+    func resetBackoffAndReconnect() {
+        queue.async { [weak self] in
+            guard let self, self.isRunning, !self.isSuspendedForSystemState else { return }
+            for session in self.sessions.values {
+                session.consecutiveFailures = 0
+                session.nextRetryTime = 0
+            }
+            self.attemptConnect()
+        }
+    }
 
-    private func setupWakeObserver() {
+    // MARK: - 休眠与锁屏状态监听
+
+    private func setupSystemStateObservers() {
         DispatchQueue.main.async { [weak self] in
-            guard let self, self.wakeObserver == nil else { return }
-            self.wakeObserver = NSWorkspace.shared.notificationCenter.addObserver(
-                forName: NSWorkspace.didWakeNotification,
-                object: nil,
-                queue: .main
-            ) { [weak self] _ in
-                self?.handleSystemWake()
+            guard let self else { return }
+            let workspaceCenter = NSWorkspace.shared.notificationCenter
+            if self.sleepObserver == nil {
+                self.sleepObserver = workspaceCenter.addObserver(
+                    forName: NSWorkspace.willSleepNotification,
+                    object: nil,
+                    queue: .main
+                ) { [weak self] _ in
+                    self?.handleSystemSuspend(reason: "系统即将休眠")
+                }
+            }
+            if self.wakeObserver == nil {
+                self.wakeObserver = workspaceCenter.addObserver(
+                    forName: NSWorkspace.didWakeNotification,
+                    object: nil,
+                    queue: .main
+                ) { [weak self] _ in
+                    self?.handleSystemResume(reason: "系统从睡眠唤醒")
+                }
+            }
+
+            let distributedCenter = DistributedNotificationCenter.default()
+            if self.screenLockObserver == nil {
+                self.screenLockObserver = distributedCenter.addObserver(
+                    forName: Notification.Name("com.apple.screenIsLocked"),
+                    object: nil,
+                    queue: .main
+                ) { [weak self] _ in
+                    self?.handleSystemSuspend(reason: "屏幕已锁定")
+                }
+            }
+            if self.screenUnlockObserver == nil {
+                self.screenUnlockObserver = distributedCenter.addObserver(
+                    forName: Notification.Name("com.apple.screenIsUnlocked"),
+                    object: nil,
+                    queue: .main
+                ) { [weak self] _ in
+                    self?.handleSystemResume(reason: "屏幕已解锁")
+                }
             }
         }
     }
 
-    private func removeWakeObserver() {
+    private func removeSystemStateObservers() {
         DispatchQueue.main.async { [weak self] in
-            guard let self, let observer = self.wakeObserver else { return }
-            NSWorkspace.shared.notificationCenter.removeObserver(observer)
-            self.wakeObserver = nil
+            guard let self else { return }
+            let workspaceCenter = NSWorkspace.shared.notificationCenter
+            if let observer = self.sleepObserver {
+                workspaceCenter.removeObserver(observer)
+                self.sleepObserver = nil
+            }
+            if let observer = self.wakeObserver {
+                workspaceCenter.removeObserver(observer)
+                self.wakeObserver = nil
+            }
+
+            let distributedCenter = DistributedNotificationCenter.default()
+            if let observer = self.screenLockObserver {
+                distributedCenter.removeObserver(observer)
+                self.screenLockObserver = nil
+            }
+            if let observer = self.screenUnlockObserver {
+                distributedCenter.removeObserver(observer)
+                self.screenUnlockObserver = nil
+            }
         }
     }
 
-    private func handleSystemWake() {
+    private func handleSystemSuspend(reason: String) {
         queue.async { [weak self] in
-            guard let self, self.isRunning else { return }
-            Logger.bluetooth.notice("系统从睡眠唤醒，重置所有副屏蓝牙链路并立即发起重连")
+            guard let self, self.isRunning, !self.isSuspendedForSystemState else { return }
+            self.isSuspendedForSystemState = true
+            Logger.bluetooth.notice("\(reason, privacy: .public)，暂停经典蓝牙副屏轮询并释放链路")
+            self.invalidateReconnectTimer()
+            self.teardownAll()
+        }
+    }
+
+    private func handleSystemResume(reason: String) {
+        queue.async { [weak self] in
+            guard let self, self.isRunning, self.isSuspendedForSystemState else { return }
+            self.isSuspendedForSystemState = false
+            for session in self.sessions.values {
+                session.consecutiveFailures = 0
+                session.nextRetryTime = 0
+            }
+            Logger.bluetooth.notice("\(reason, privacy: .public)，重置经典蓝牙退避并恢复副屏连接")
             self.teardownAll()
             self.scheduleReconnectTimer(fireImmediately: true)
         }
@@ -195,6 +278,13 @@ final class BluetoothSyncService: NSObject, ObservableObject {
 
     // MARK: - 连接池管理
 
+    private func invalidateReconnectTimer() {
+        DispatchQueue.main.async { [weak self] in
+            self?.reconnectTimer?.invalidate()
+            self?.reconnectTimer = nil
+        }
+    }
+
     private func scheduleReconnectTimer(fireImmediately: Bool = false) {
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
@@ -211,7 +301,7 @@ final class BluetoothSyncService: NSObject, ObservableObject {
     }
 
     private func attemptConnect() {
-        guard isRunning else { return }
+        guard isRunning, !isSuspendedForSystemState else { return }
 
         let candidates = findPairedDisplayDevices()
         if candidates.isEmpty {
@@ -252,9 +342,17 @@ final class BluetoothSyncService: NSObject, ObservableObject {
             } else if session.isConnecting {
                 Logger.bluetooth.debug("副屏 [\(session.deviceName)] 正在连接中，跳过重复调度")
             } else {
+                guard now >= session.nextRetryTime else { continue }
                 connect(session: session)
             }
         }
+    }
+
+    private func recordFailure(for session: DisplaySession) {
+        session.consecutiveFailures += 1
+        let cooldown = BLEConnectionPolicy.classicReconnectCooldown(consecutiveFailures: session.consecutiveFailures)
+        session.nextRetryTime = Date().timeIntervalSince1970 + cooldown
+        Logger.bluetooth.debug("副屏 [\(session.deviceName)] 连续失败 \(session.consecutiveFailures) 次，冷却 \(Int(cooldown))s 后再试")
     }
 
     private func connect(session: DisplaySession) {
@@ -269,15 +367,19 @@ final class BluetoothSyncService: NSObject, ObservableObject {
         querySDP(for: session) { [weak self] channelID in
             guard let self else { return }
             self.queue.async {
-                guard self.isRunning, session.isConnecting else { return }
+                guard self.isRunning, !self.isSuspendedForSystemState, session.isConnecting else { return }
                 self.cancelConnectTimeout(for: session)
 
                 if let channelID {
-                    self.openChannel(for: session, channelID: channelID)
-                } else {
-                    // SDP 正常结束但没拿到通道：同轮回退预备通道
-                    Logger.bluetooth.notice("副屏 [\(session.deviceName)] SDP 未查询到 SPP 通道，回退预备通道 \(Self.fallbackChannelID)")
+                    self.openChannelAsync(for: session, channelID: channelID)
+                } else if session.device.isConnected() {
+                    // 设备经典 ACL 已连通但 SDP 未返回通道：回退预备通道
+                    Logger.bluetooth.notice("副屏 [\(session.deviceName)] SDP 未查询到 SPP 通道（链路已连），回退预备通道 \(Self.fallbackChannelID)")
                     self.openChannelAsync(for: session, channelID: Self.fallbackChannelID)
+                } else {
+                    Logger.bluetooth.info("副屏 [\(session.deviceName)] SDP 未查询到 SPP 通道且设备未连接，跳过回退并等待冷却重连")
+                    self.recordFailure(for: session)
+                    self.teardown(session: session)
                 }
             }
         }
@@ -298,17 +400,16 @@ final class BluetoothSyncService: NSObject, ObservableObject {
         }
     }
 
-    /// 遍历已配对设备：返回所有名称前缀符合或已知 MAC 的副屏设备（支持多副屏）
+    /// 遍历已配对设备：返回所有符合经典蓝牙条件的副屏设备（排除纯 BLE LCD/ESP32）
     private func findPairedDisplayDevices() -> [IOBluetoothDevice] {
         let paired = IOBluetoothDevice.pairedDevices() as? [IOBluetoothDevice] ?? []
-        let normalizedKnownAddr = Self.normalizeAddress(Self.knownDisplayMAC)
         return paired.filter { device in
             let name = (device.nameOrAddress ?? device.name ?? "")
-            if name.localizedCaseInsensitiveContains(Self.deviceNamePrefix) {
-                return true
-            }
-            let normalizedDeviceAddr = Self.normalizeAddress(device.addressString)
-            return !normalizedKnownAddr.isEmpty && normalizedDeviceAddr == normalizedKnownAddr
+            return BLEConnectionPolicy.isClassicBluetoothCandidate(
+                name: name,
+                address: device.addressString,
+                knownDisplayMAC: Self.knownDisplayMAC
+            )
         }
     }
 
@@ -339,26 +440,17 @@ final class BluetoothSyncService: NSObject, ObservableObject {
         completion?(channelID)
     }
 
-    private func openChannel(for session: DisplaySession, channelID: BluetoothRFCOMMChannelID) {
-        var channel: IOBluetoothRFCOMMChannel?
-        let result = session.device.openRFCOMMChannelSync(&channel, withChannelID: channelID, delegate: self)
-        if result == kIOReturnSuccess, let channel {
-            handleChannelConnected(session: session, channel: channel, channelID: channelID)
-            return
-        }
-
-        Logger.bluetooth.info("副屏 [\(session.deviceName)] 同步打开 RFCOMM 通道返回: \(result, privacy: .public)，尝试异步打开通道 \(channelID)...")
-        openChannelAsync(for: session, channelID: channelID)
-    }
-
-    /// 异步打开 RFCOMM 通道（不阻塞串行队列），并重新武装 8s 超时看门狗
+    /// 异步打开 RFCOMM 通道（不阻塞串行队列），持有 channel 引用并武装 8s 超时看门狗
     private func openChannelAsync(for session: DisplaySession, channelID: BluetoothRFCOMMChannelID) {
         session.isConnecting = true
         beginConnectTimeout(for: session)
         var channel: IOBluetoothRFCOMMChannel?
         let status = session.device.openRFCOMMChannelAsync(&channel, withChannelID: channelID, delegate: self)
-        if status != kIOReturnSuccess {
+        if status == kIOReturnSuccess, let channel {
+            session.channel = channel
+        } else {
             Logger.bluetooth.info("副屏 [\(session.deviceName)] 异步发起 RFCOMM 通道失败: \(status, privacy: .public)")
+            recordFailure(for: session)
             teardown(session: session)
         }
     }
@@ -369,6 +461,8 @@ final class BluetoothSyncService: NSObject, ObservableObject {
         channelID: BluetoothRFCOMMChannelID
     ) {
         session.isConnecting = false
+        session.consecutiveFailures = 0
+        session.nextRetryTime = 0
         cancelConnectTimeout(for: session)
         session.channel = channel
         Logger.bluetooth.notice("副屏 [\(session.deviceName)] RFCOMM 通道已建立 (channel \(channelID))")
@@ -422,18 +516,15 @@ final class BluetoothSyncService: NSObject, ObservableObject {
             guard let self else { return }
             guard session.channel?.isOpen() != true else { return }
 
-            // SDP 查询挂死（回调一直不回来）：丢弃迟到回调，同轮直接用
-            // 预备通道异步打开，不再空等下一轮重连
             if session.isQueryingSDP {
-                Logger.bluetooth.info("副屏 [\(session.deviceName)] SDP 查询超时（\(Int(Self.connectTimeout))s）无响应，丢弃回调并同轮回退预备通道 \(Self.fallbackChannelID)")
-                sdpQueryCompletions.removeValue(forKey: session.address)
-                session.isQueryingSDP = false
-                self.cancelConnectTimeout(for: session)
-                self.openChannelAsync(for: session, channelID: Self.fallbackChannelID)
+                Logger.bluetooth.info("副屏 [\(session.deviceName)] SDP 查询超时（\(Int(Self.connectTimeout))s）无响应，设备不可达，释放并进入冷却")
+                self.recordFailure(for: session)
+                self.teardown(session: session)
                 return
             }
 
-            Logger.bluetooth.info("副屏 [\(session.deviceName)] 连接超时（\(Int(Self.connectTimeout))s），释放并等待下轮重连")
+            Logger.bluetooth.info("副屏 [\(session.deviceName)] 连接超时（\(Int(Self.connectTimeout))s），释放并进入冷却")
+            self.recordFailure(for: session)
             self.teardown(session: session)
         }
         session.connectTimeoutWorkItem = work
@@ -563,6 +654,7 @@ extension BluetoothSyncService: IOBluetoothRFCOMMChannelDelegate {
             self.cancelConnectTimeout(for: session)
             guard status == kIOReturnSuccess, let channel else {
                 Logger.bluetooth.info("副屏 [\(session.deviceName)] 异步打开 RFCOMM 通道失败: \(status, privacy: .public)")
+                self.recordFailure(for: session)
                 self.teardown(session: session)
                 return
             }

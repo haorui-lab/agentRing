@@ -169,6 +169,13 @@ class AntigravityAPIService: UsageProvider {
     private static func refreshCredentialsCacheSync(allowInteractiveKeychain: Bool = false) -> Bool {
         // 后台刷新默认静默；仅 AuthSettings 等显式操作才允许可能弹窗的 CLI
         let available = resolveAccessToken(allowInteractiveKeychain: allowInteractiveKeychain) != nil
+        if !available && !allowInteractiveKeychain && !isOAuthFileQuarantined() && isOAuthFileReadTransientlyBlocked() {
+            credentialsCacheLock.lock()
+            let previous = credentialsCache?.available ?? false
+            credentialsRefreshScheduled = false
+            credentialsCacheLock.unlock()
+            return previous
+        }
         let accountEmail = available ? readAccountEmailFromOAuthFile() : nil
         credentialsCacheLock.lock()
         credentialsCache = (available, Date())
@@ -176,6 +183,61 @@ class AntigravityAPIService: UsageProvider {
         credentialsCacheLock.unlock()
         publishCredentialsPresence(available, accountEmail: accountEmail)
         return available
+    }
+
+    /// 启动阶段同步快检本地 `~/.gemini/oauth_creds.json`，避免异步探测未回传前首轮刷新漏掉 Antigravity。
+    static func hasLocalOAuthCredentialsHint() -> (present: Bool, email: String?) {
+        if isOAuthFileQuarantined() {
+            credentialsCacheLock.lock()
+            credentialsCache = (false, Date())
+            credentialsCacheLock.unlock()
+            return (false, nil)
+        }
+        guard let data = try? Data(contentsOf: oauthCredsFileURL),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            credentialsCacheLock.lock()
+            credentialsCache = (false, Date())
+            credentialsCacheLock.unlock()
+            return (false, nil)
+        }
+        let hasAccessToken = (json["access_token"] as? String).map { !$0.isEmpty } ?? false
+        let hasRefreshToken = (json["refresh_token"] as? String).map { !$0.isEmpty } ?? false
+        let present = hasAccessToken || hasRefreshToken
+        let email = (json["id_token"] as? String).flatMap {
+            $0.isEmpty ? nil : AntigravityAccountIdentity.email(fromIDToken: $0)
+        }
+        credentialsCacheLock.lock()
+        credentialsCache = (present, Date())
+        credentialsCacheLock.unlock()
+        return (present, present ? email : nil)
+    }
+
+    private static func isOAuthFileReadTransientlyBlocked() -> Bool {
+        do {
+            _ = try Data(contentsOf: oauthCredsFileURL)
+            return false
+        } catch {
+            return isTransientFileReadError(error)
+        }
+    }
+
+    private static func isTransientFileReadError(_ error: Error) -> Bool {
+        let nsError = error as NSError
+        if nsError.domain == NSPOSIXErrorDomain {
+            let transientCodes: Set<Int> = [
+                Int(POSIXErrorCode.EMFILE.rawValue),
+                Int(POSIXErrorCode.ENFILE.rawValue),
+                Int(POSIXErrorCode.EAGAIN.rawValue),
+                Int(POSIXErrorCode.EBUSY.rawValue)
+            ]
+            if transientCodes.contains(nsError.code) {
+                return true
+            }
+        }
+        if let underlying = nsError.userInfo[NSUnderlyingErrorKey] as? Error {
+            return isTransientFileReadError(underlying)
+        }
+        return false
     }
 
     private static func publishCredentialsPresence(_ available: Bool, accountEmail: String? = nil) {
@@ -214,6 +276,11 @@ class AntigravityAPIService: UsageProvider {
             guard let self else { return }
             // 用量拉取是自动路径：宁可无凭证，也不弹钥匙串
             guard let token = Self.resolveAccessToken(allowInteractiveKeychain: false) else {
+                if !Self.isOAuthFileQuarantined() && Self.isOAuthFileReadTransientlyBlocked() {
+                    Logger.api.warning("Antigravity oauth 文件临时读取失败（保留现有凭证状态）")
+                    DispatchQueue.main.async { completion(.failure(UsageError.networkError)) }
+                    return
+                }
                 Self.markCredentialsUnavailable()
                 DispatchQueue.main.async { completion(.failure(UsageError.noCredentials)) }
                 return

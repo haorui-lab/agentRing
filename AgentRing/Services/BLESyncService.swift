@@ -105,11 +105,16 @@ nonisolated final class BLESyncService: NSObject, ObservableObject, @unchecked S
     // MARK: - 状态
 
     private(set) var isRunning = false
+    private var isSuspendedForSystemState = false
     private var centralManager: CBCentralManager?
     private var sessions: [UUID: BLESession] = [:]
     private var lastPayloadLine: String?
     private var heartbeatTimer: Timer?
     private var scanTimeoutWorkItem: DispatchWorkItem?
+    private var sleepObserver: NSObjectProtocol?
+    private var wakeObserver: NSObjectProtocol?
+    private var screenLockObserver: NSObjectProtocol?
+    private var screenUnlockObserver: NSObjectProtocol?
 
     /// 失败设备冷却记录（peripheral UUID → 时间）
     /// 冷却期内 didDiscover 只更新列表、不自动 connect，防止反复粘死扫描窗口
@@ -134,7 +139,7 @@ nonisolated final class BLESyncService: NSObject, ObservableObject, @unchecked S
     }
 
     private func mayConnect(_ id: UUID) -> Bool {
-        isRunning && !cancellingDevices.contains(id) && BLEConnectionPolicy.mayConnect(
+        isRunning && !isSuspendedForSystemState && !cancellingDevices.contains(id) && BLEConnectionPolicy.mayConnect(
             id: id, selected: Set(savedDevices.keys), requested: requestedDevices, suspended: suspendedDevices,
             classicConnected: BLEConnectionPolicy.usesClassicConnection(
                 name: advertisedNames[id] ?? savedDevices[id] ?? peripherals[id]?.name ?? "", connectedNames: classicDeviceNames))
@@ -252,9 +257,11 @@ nonisolated final class BLESyncService: NSObject, ObservableObject, @unchecked S
     func rescan() {
         queue.async { [weak self] in
             guard let self, self.isRunning else { return }
+            self.isSuspendedForSystemState = false
             self.stopScanning()
             DispatchQueue.main.async {
                 self.discoveredDevices.removeAll(where: { !$0.isConnected })
+                BluetoothSyncService.shared.resetBackoffAndReconnect()
             }
             self.startScanning()
         }
@@ -266,9 +273,11 @@ nonisolated final class BLESyncService: NSObject, ObservableObject, @unchecked S
             guard let self else { return }
             guard !self.isRunning else { return }
             self.isRunning = true
+            self.isSuspendedForSystemState = false
             self.hostName = label
             Self.logger.notice("BLE 同步启动，仅重连已选择的副屏")
 
+            self.setupSystemStateObservers()
             if self.centralManager == nil {
                 self.centralManager = CBCentralManager(delegate: self, queue: self.queue)
             } else if self.centralManager?.state == .poweredOn {
@@ -282,6 +291,8 @@ nonisolated final class BLESyncService: NSObject, ObservableObject, @unchecked S
         queue.async { [weak self] in
             guard let self else { return }
             self.isRunning = false
+            self.isSuspendedForSystemState = false
+            self.removeSystemStateObservers()
             self.scanTimeoutWorkItem?.cancel()
             self.scanTimeoutWorkItem = nil
             for identifier in Array(self.gattDiscoveryTimeouts.keys) {
@@ -304,6 +315,103 @@ nonisolated final class BLESyncService: NSObject, ObservableObject, @unchecked S
                 self.heartbeatTimer = nil
             }
             Self.logger.notice("BLE 蓝牙同步服务停止")
+        }
+    }
+
+    // MARK: - 休眠与锁屏状态监听
+
+    private func setupSystemStateObservers() {
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            let workspaceCenter = NSWorkspace.shared.notificationCenter
+            if self.sleepObserver == nil {
+                self.sleepObserver = workspaceCenter.addObserver(
+                    forName: NSWorkspace.willSleepNotification,
+                    object: nil,
+                    queue: .main
+                ) { [weak self] _ in
+                    self?.handleSystemSuspend(reason: "系统即将休眠")
+                }
+            }
+            if self.wakeObserver == nil {
+                self.wakeObserver = workspaceCenter.addObserver(
+                    forName: NSWorkspace.didWakeNotification,
+                    object: nil,
+                    queue: .main
+                ) { [weak self] _ in
+                    self?.handleSystemResume(reason: "系统从睡眠唤醒")
+                }
+            }
+
+            let distributedCenter = DistributedNotificationCenter.default()
+            if self.screenLockObserver == nil {
+                self.screenLockObserver = distributedCenter.addObserver(
+                    forName: Notification.Name("com.apple.screenIsLocked"),
+                    object: nil,
+                    queue: .main
+                ) { [weak self] _ in
+                    self?.handleSystemSuspend(reason: "屏幕已锁定")
+                }
+            }
+            if self.screenUnlockObserver == nil {
+                self.screenUnlockObserver = distributedCenter.addObserver(
+                    forName: Notification.Name("com.apple.screenIsUnlocked"),
+                    object: nil,
+                    queue: .main
+                ) { [weak self] _ in
+                    self?.handleSystemResume(reason: "屏幕已解锁")
+                }
+            }
+        }
+    }
+
+    private func removeSystemStateObservers() {
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            let workspaceCenter = NSWorkspace.shared.notificationCenter
+            if let observer = self.sleepObserver {
+                workspaceCenter.removeObserver(observer)
+                self.sleepObserver = nil
+            }
+            if let observer = self.wakeObserver {
+                workspaceCenter.removeObserver(observer)
+                self.wakeObserver = nil
+            }
+
+            let distributedCenter = DistributedNotificationCenter.default()
+            if let observer = self.screenLockObserver {
+                distributedCenter.removeObserver(observer)
+                self.screenLockObserver = nil
+            }
+            if let observer = self.screenUnlockObserver {
+                distributedCenter.removeObserver(observer)
+                self.screenUnlockObserver = nil
+            }
+        }
+    }
+
+    private func handleSystemSuspend(reason: String) {
+        queue.async { [weak self] in
+            guard let self, self.isRunning, !self.isSuspendedForSystemState else { return }
+            self.isSuspendedForSystemState = true
+            Self.logger.notice("\(reason, privacy: .public)，暂停 BLE 扫描与心跳轮询")
+            self.stopScanning()
+            DispatchQueue.main.async {
+                self.heartbeatTimer?.invalidate()
+                self.heartbeatTimer = nil
+            }
+        }
+    }
+
+    private func handleSystemResume(reason: String) {
+        queue.async { [weak self] in
+            guard let self, self.isRunning, self.isSuspendedForSystemState else { return }
+            self.isSuspendedForSystemState = false
+            Self.logger.notice("\(reason, privacy: .public)，恢复 BLE 心跳与扫描")
+            self.scheduleHeartbeatTimer()
+            if self.centralManager?.state == .poweredOn {
+                self.startScanning()
+            }
         }
     }
 
@@ -338,7 +446,7 @@ nonisolated final class BLESyncService: NSObject, ObservableObject, @unchecked S
     // MARK: - 内部扫描与发送
 
     private func startScanning(duration: TimeInterval = 6.0) {
-        guard centralManager?.state == .poweredOn else { return }
+        guard isRunning, !isSuspendedForSystemState, centralManager?.state == .poweredOn else { return }
         scanTimeoutWorkItem?.cancel()
         DispatchQueue.main.async { self.isScanning = true }
         Self.logger.info("扫描 BLE 副屏；未选择的设备仅展示")
@@ -417,7 +525,7 @@ nonisolated final class BLESyncService: NSObject, ObservableObject, @unchecked S
     }
 
     private func sendHeartbeat() {
-        guard isRunning else { return }
+        guard isRunning, !isSuspendedForSystemState else { return }
 
         // 后台搜寻未连接的已选择副屏，保留 1:N 重连能力
         // （用 centralManager.isScanning 判断 CB 真相，@Published isScanning 经主线程异步易脏读）

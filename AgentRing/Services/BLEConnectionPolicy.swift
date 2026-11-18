@@ -24,6 +24,30 @@ nonisolated enum BLEConnectionPolicy {
         name.localizedCaseInsensitiveContains("LCD") || name.localizedCaseInsensitiveContains("ESP32")
     }
 
+    /// 经典蓝牙 SPP 候选设备过滤：排除纯 BLE 硬件副屏（LCD / ESP32），避免对不支持 SPP 的设备反复建链触发 CoreBluetooth FD 泄漏。
+    static func isClassicBluetoothCandidate(name: String, address: String?, knownDisplayMAC: String) -> Bool {
+        if requiresBinding(name: name) {
+            return false
+        }
+        if name.localizedCaseInsensitiveContains("AgentRing") {
+            return true
+        }
+        let normalizedKnown = knownDisplayMAC.filter { $0.isLetter || $0.isNumber }.lowercased()
+        let normalizedAddr = (address ?? "").filter { $0.isLetter || $0.isNumber }.lowercased()
+        return !normalizedKnown.isEmpty && normalizedAddr == normalizedKnown
+    }
+
+    /// 经典蓝牙连续建链失败后的指数退避冷却时间（秒）：10s -> 20s -> 40s -> 80s -> 160s -> 300s。
+    static func classicReconnectCooldown(
+        consecutiveFailures: Int,
+        baseInterval: TimeInterval = 10,
+        maxInterval: TimeInterval = 300
+    ) -> TimeInterval {
+        guard consecutiveFailures > 0 else { return 0 }
+        let exponent = Double(min(consecutiveFailures - 1, 5))
+        return min(maxInterval, baseInterval * pow(2.0, exponent))
+    }
+
     static func validBindingResponse(_ data: Data) -> Bool {
         struct Response: Decodable { let `protocol`: Int; let deviceId: String }
         guard let value = try? JSONDecoder().decode(Response.self, from: data) else { return false }

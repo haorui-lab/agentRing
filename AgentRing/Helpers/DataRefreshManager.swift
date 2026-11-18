@@ -34,6 +34,12 @@ final class DataRefreshManager: ObservableObject {
     private let minimumAnimationDuration: TimeInterval = 1.0
     private var refreshActivity: NSObjectProtocol?
     private var wakeObserver: NSObjectProtocol?
+    private var sleepObserver: NSObjectProtocol?
+    private var screenLockObserver: NSObjectProtocol?
+    private var screenUnlockObserver: NSObjectProtocol?
+    private var isSuspendedForSystemState = false
+    private var isRefreshingActive = false
+    private var wakeRefreshWorkItem: DispatchWorkItem?
     private var codexSessionExpiredNotified = false
     private var cursorSessionExpiredNotified = false
     private var antigravitySessionExpiredNotified = false
@@ -89,7 +95,7 @@ final class DataRefreshManager: ObservableObject {
     }
 
     init() {
-        setupWakeObserver()
+        setupSystemStateObservers()
     }
 
     func fetchUsage() {
@@ -369,6 +375,8 @@ final class DataRefreshManager: ObservableObject {
     }
 
     func startRefreshing() {
+        isRefreshingActive = true
+        isSuspendedForSystemState = false
         beginRefreshActivity()
         fetchUsage()
         restartTimer()
@@ -382,6 +390,9 @@ final class DataRefreshManager: ObservableObject {
     }
 
     func stopRefreshing() {
+        isRefreshingActive = false
+        wakeRefreshWorkItem?.cancel()
+        wakeRefreshWorkItem = nil
         timerManager.invalidate(TimerID.mainRefresh)
         timerManager.invalidate(TimerID.codexTokenRefresh)
         endRefreshActivity()
@@ -398,6 +409,7 @@ final class DataRefreshManager: ObservableObject {
     }
 
     private func restartTimer() {
+        guard isRefreshingActive, !isSuspendedForSystemState else { return }
         timerManager.invalidate(TimerID.mainRefresh)
         timerManager.schedule(TimerID.mainRefresh, interval: TimeInterval(settings.effectiveRefreshInterval), repeats: true) { [weak self] in
             self?.fetchUsage()
@@ -405,6 +417,7 @@ final class DataRefreshManager: ObservableObject {
     }
 
     private func startCodexTokenRefreshTimer() {
+        guard isRefreshingActive, !isSuspendedForSystemState else { return }
         timerManager.schedule(TimerID.codexTokenRefresh, interval: 10 * 60, repeats: true) { [weak self] in
             self?.codexApiService.proactivelyRefreshIfNeeded()
         }
@@ -425,17 +438,67 @@ final class DataRefreshManager: ObservableObject {
         }
     }
 
-    private func setupWakeObserver() {
-        wakeObserver = NSWorkspace.shared.notificationCenter.addObserver(
+    private func setupSystemStateObservers() {
+        let workspaceCenter = NSWorkspace.shared.notificationCenter
+        sleepObserver = workspaceCenter.addObserver(
+            forName: NSWorkspace.willSleepNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.handleSystemSuspend(reason: "系统即将休眠")
+        }
+        wakeObserver = workspaceCenter.addObserver(
             forName: NSWorkspace.didWakeNotification,
             object: nil,
             queue: .main
         ) { [weak self] _ in
-            Logger.menuBar.debug("系统从睡眠唤醒，刷新用量")
-            DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
-                self?.fetchUsage()
-            }
+            self?.handleSystemResume(reason: "系统从睡眠唤醒")
         }
+
+        let distributedCenter = DistributedNotificationCenter.default()
+        screenLockObserver = distributedCenter.addObserver(
+            forName: Notification.Name("com.apple.screenIsLocked"),
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.handleSystemSuspend(reason: "屏幕已锁定")
+        }
+        screenUnlockObserver = distributedCenter.addObserver(
+            forName: Notification.Name("com.apple.screenIsUnlocked"),
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.handleSystemResume(reason: "屏幕已解锁")
+        }
+    }
+
+    private func handleSystemSuspend(reason: String) {
+        guard !isSuspendedForSystemState else { return }
+        isSuspendedForSystemState = true
+        wakeRefreshWorkItem?.cancel()
+        wakeRefreshWorkItem = nil
+        timerManager.invalidate(TimerID.mainRefresh)
+        timerManager.invalidate(TimerID.codexTokenRefresh)
+        endRefreshActivity()
+        Logger.menuBar.notice("\(reason, privacy: .public)，暂停后台刷新定时器")
+    }
+
+    private func handleSystemResume(reason: String) {
+        guard isRefreshingActive else { return }
+        isSuspendedForSystemState = false
+        beginRefreshActivity()
+        restartTimer()
+        startCodexTokenRefreshTimer()
+        Logger.menuBar.debug("\(reason, privacy: .public)，恢复定时器并调度用量刷新")
+
+        wakeRefreshWorkItem?.cancel()
+        let workItem = DispatchWorkItem { [weak self] in
+            guard let self, self.isRefreshingActive, !self.isSuspendedForSystemState else { return }
+            self.wakeRefreshWorkItem = nil
+            self.fetchUsage()
+        }
+        wakeRefreshWorkItem = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.5, execute: workItem)
     }
 
     func refreshOnPopoverOpen() {
@@ -450,9 +513,16 @@ final class DataRefreshManager: ObservableObject {
             }
         }
 
+        let hasMissingProviderData =
+            (shouldFetchCodexUsage && codexUsageData == nil && !codexNeedsRelogin) ||
+            (shouldFetchCursorUsage && cursorUsageData == nil && !cursorNeedsRelogin) ||
+            (shouldFetchAntigravityUsage && antigravityUsageData == nil && !antigravityNeedsRelogin)
+
         if let lastFetch = lastAPIFetchTime,
            now.timeIntervalSince(lastFetch) < 30 {
-            return
+            if isLoading || !hasMissingProviderData {
+                return
+            }
         }
 
         fetchUsage()
@@ -682,12 +752,28 @@ final class DataRefreshManager: ObservableObject {
     }
 
     func cleanup() {
+        wakeRefreshWorkItem?.cancel()
+        wakeRefreshWorkItem = nil
         timerManager.invalidateAll()
         endRefreshActivity()
         antigravityApiService.cancelAllRequests()
+        let workspaceCenter = NSWorkspace.shared.notificationCenter
         if let wakeObserver {
-            NSWorkspace.shared.notificationCenter.removeObserver(wakeObserver)
+            workspaceCenter.removeObserver(wakeObserver)
             self.wakeObserver = nil
+        }
+        if let sleepObserver {
+            workspaceCenter.removeObserver(sleepObserver)
+            self.sleepObserver = nil
+        }
+        let distributedCenter = DistributedNotificationCenter.default()
+        if let screenLockObserver {
+            distributedCenter.removeObserver(screenLockObserver)
+            self.screenLockObserver = nil
+        }
+        if let screenUnlockObserver {
+            distributedCenter.removeObserver(screenUnlockObserver)
+            self.screenUnlockObserver = nil
         }
     }
 
