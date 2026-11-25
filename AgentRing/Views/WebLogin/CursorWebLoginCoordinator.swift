@@ -32,19 +32,6 @@ final class CursorWebLoginCoordinator: ObservableObject {
     private var authRedirectRecoveryScheduled = false
     fileprivate var authRedirectGaveUp = false
 
-    private let allowedDomains: Set<String> = [
-        "cursor.com",
-        "cursor.sh",
-        "authenticator.cursor.sh",
-        "workos.com",
-        "google.com",
-        "accounts.google.com",
-        "github.com",
-        "appleid.apple.com",
-        "login.microsoftonline.com",
-        "challenges.cloudflare.com"
-    ]
-
     private let safariUserAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.6 Safari/605.1.15"
 
     init() {
@@ -129,6 +116,7 @@ final class CursorWebLoginCoordinator: ObservableObject {
 
     fileprivate func startCookieMonitoring() {
         cookieTimer?.invalidate()
+        checkForSessionToken()
         cookieTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
             self?.checkForSessionToken()
         }
@@ -140,6 +128,8 @@ final class CursorWebLoginCoordinator: ObservableObject {
             guard let token = Self.extractSessionToken(from: cookies) else { return }
 
             DispatchQueue.main.async {
+                if case .validating = self.loginState { return }
+                if case .success = self.loginState { return }
                 self.cookieTimer?.invalidate()
                 self.cookieTimer = nil
                 self.validateSessionToken(token)
@@ -214,8 +204,18 @@ extension CursorWebLoginCoordinator {
         }
 
         func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
+            handleNavigationFailure(error)
+        }
+
+        func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
+            handleNavigationFailure(error)
+        }
+
+        private func handleNavigationFailure(_ error: Error) {
             let nsError = error as NSError
             if nsError.code == NSURLErrorCancelled { return }
+            // WebKitErrorFrameLoadInterruptedByPolicyChange (102) 在策略拦截或外部恢复重放时正常触发
+            if nsError.domain == "WebKitErrorDomain", nsError.code == 102 { return }
             coordinator?.loginState = .failed(message: error.localizedDescription)
         }
 
@@ -224,29 +224,24 @@ extension CursorWebLoginCoordinator {
             decidePolicyFor navigationAction: WKNavigationAction,
             decisionHandler: @escaping (WKNavigationActionPolicy) -> Void
         ) {
-            guard let coordinator = coordinator,
-                  let url = navigationAction.request.url,
-                  let host = url.host?.lowercased() else {
+            guard let coordinator, let url = navigationAction.request.url else {
                 decisionHandler(.allow)
                 return
             }
 
-            if CursorLoginNavigation.shouldReplayAsFreshLogin(
+            let isMainFrame = navigationAction.targetFrame?.isMainFrame ?? true
+            switch CursorLoginNavigation.decideNavigation(
                 method: navigationAction.request.httpMethod,
-                url: url
+                url: url,
+                isMainFrame: isMainFrame
             ) {
+            case .allow:
+                decisionHandler(.allow)
+            case .replayFreshLogin:
                 decisionHandler(.cancel)
                 coordinator.recoverFromAuthRedirectTrap()
-                return
-            }
-
-            let isAllowed = coordinator.allowedDomains.contains { domain in
-                host == domain || host.hasSuffix(".\(domain)")
-            }
-            if isAllowed {
-                decisionHandler(.allow)
-            } else {
-                NSWorkspace.shared.open(url)
+            case .cancel:
+                Logger.settings.info("Cursor 登录拦截非 Web 协议跳转: \(url.scheme ?? "unknown", privacy: .public)")
                 decisionHandler(.cancel)
             }
         }
@@ -265,7 +260,22 @@ extension CursorWebLoginCoordinator {
             for navigationAction: WKNavigationAction,
             windowFeatures: WKWindowFeatures
         ) -> WKWebView? {
-            webView.load(navigationAction.request)
+            guard let url = navigationAction.request.url else {
+                webView.load(navigationAction.request)
+                return nil
+            }
+            switch CursorLoginNavigation.decideNavigation(
+                method: navigationAction.request.httpMethod,
+                url: url,
+                isMainFrame: true
+            ) {
+            case .allow:
+                webView.load(navigationAction.request)
+            case .replayFreshLogin:
+                coordinator?.recoverFromAuthRedirectTrap()
+            case .cancel:
+                Logger.settings.info("Cursor 登录弹窗拦截非 Web 协议跳转: \(url.scheme ?? "unknown", privacy: .public)")
+            }
             return nil
         }
     }

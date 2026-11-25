@@ -73,5 +73,65 @@ struct CursorLoginNavigationChecks {
             CursorLoginNavigation.isUnusableAuthDocument(url: slashed),
             "trailing slash still matches the trap path"
         )
+
+        let allowedMainFrameURLs = [
+            "https://accounts.youtube.com/accounts/SetSID?ssdc=1&sidt=ALWU2cs",
+            "https://accounts.google.com.hk/v3/signin",
+            "https://login.live.com/oauth20_authorize.srf",
+            "https://idmsa.apple.com/appleauth/auth/signin",
+            "https://sso.corp.example.com/saml"
+        ]
+        for urlString in allowedMainFrameURLs {
+            let url = URL(string: urlString)!
+            expect(
+                CursorLoginNavigation.decideNavigation(method: "GET", url: url, isMainFrame: true) == .allow,
+                "main-frame GET to \(url.host ?? urlString) is allowed"
+            )
+        }
+
+        let allowedSubframeURLs = [
+            "https://accounts.youtube.com/RotateCookiesPage",
+            "about:blank",
+            "about:srcdoc",
+            "blob:https://accounts.google.com/id",
+            "data:text/html,ok"
+        ]
+        for urlString in allowedSubframeURLs {
+            let url = URL(string: urlString)!
+            expect(
+                CursorLoginNavigation.decideNavigation(method: "GET", url: url, isMainFrame: false) == .allow,
+                "subframe load \(urlString) is allowed"
+            )
+        }
+
+        expect(
+            CursorLoginNavigation.decideNavigation(method: "POST", url: initiate, isMainFrame: true) == .replayFreshLogin,
+            "main-frame POST to initiate_login replays fresh login"
+        )
+        expect(
+            CursorLoginNavigation.decideNavigation(method: "POST", url: authorize, isMainFrame: true) == .replayFreshLogin,
+            "main-frame POST to authorize replays fresh login"
+        )
+        expect(
+            CursorLoginNavigation.decideNavigation(method: "POST", url: initiate, isMainFrame: false) == .allow,
+            "subframe POST to initiate_login does not trigger main-frame recovery"
+        )
+
+        let nonWebSchemes = [
+            "mailto:support@cursor.com",
+            "cursor://anysphere.cursor-retrieval/auth",
+            "tel:123"
+        ]
+        for urlString in nonWebSchemes {
+            let url = URL(string: urlString)!
+            expect(
+                CursorLoginNavigation.decideNavigation(method: "GET", url: url, isMainFrame: true) == .cancel,
+                "main-frame non-web scheme \(url.scheme ?? urlString) is cancelled"
+            )
+            expect(
+                CursorLoginNavigation.decideNavigation(method: "GET", url: url, isMainFrame: false) == .cancel,
+                "subframe non-web scheme \(url.scheme ?? urlString) is cancelled"
+            )
+        }
     }
 }

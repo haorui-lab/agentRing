@@ -17,11 +17,29 @@ import Foundation
 /// 正确入口是 `https://cursor.com/api/auth/login`。它会签发 authorization session，
 /// 最终落到带 `authorization_session_id` 的 AuthKit 页面；该页面的 GET 和 POST 都返回登录 HTML。
 enum CursorLoginNavigation {
+    enum NavigationDecision: Equatable {
+        case allow
+        case replayFreshLogin
+        case cancel
+    }
+
     static let startURLString = "https://cursor.com/api/auth/login"
     static let maxRecoveries = 2
 
+    private static let allowedWebSchemes: Set<String> = ["http", "https", "about", "blob", "data"]
+
     static var startURL: URL? {
         URL(string: startURLString)
+    }
+
+    static func decideNavigation(method: String?, url: URL, isMainFrame: Bool) -> NavigationDecision {
+        if isMainFrame && shouldReplayAsFreshLogin(method: method, url: url) {
+            return .replayFreshLogin
+        }
+        guard let scheme = url.scheme?.lowercased(), allowedWebSchemes.contains(scheme) else {
+            return .cancel
+        }
+        return .allow
     }
 
     /// 非 GET/HEAD 打到只实现了 GET 的 WorkOS 路由。跟随这种跳转会把 404 JSON 显示成登录页。
