@@ -64,13 +64,24 @@ struct BluetoothSettingsView: View {
                         .font(.caption).foregroundColor(.secondary)
                         .padding(.leading, 20)
 
-                    ForEach(visibleBLEDevices) { device in
+                    let devices = BluetoothDeviceList(
+                        discovered: bleService.discoveredDevices,
+                        selected: bleService.selectedDevices,
+                        classic: classicService.connectedClassicDevices
+                    )
+                    ForEach(devices.bleDevices) { device in
                         deviceRow(name: device.name, bleDevice: device)
                     }
-                    ForEach(classicOnlyConnections, id: \.self) { name in
-                        deviceRow(name: name, bleDevice: nil)
+                    ForEach(devices.classicConnections) { device in
+                        deviceRow(name: device.name, bleDevice: nil)
                     }
-                    if visibleBLEDevices.isEmpty && classicOnlyConnections.isEmpty {
+                    ForEach(devices.savedBLEUsingClassic) { device in
+                        Button("忘记 BLE · \(device.name) · \(device.id.uuidString.prefix(8))") {
+                            bleService.forgetDevice(device.id)
+                        }
+                        .padding(.leading, 20)
+                    }
+                    if devices.bleDevices.isEmpty && devices.classicConnections.isEmpty {
                         Text("尚未发现副屏，请确认设备已开机。")
                             .font(.caption).foregroundColor(.secondary).padding(.leading, 20)
                     }
@@ -84,8 +95,8 @@ struct BluetoothSettingsView: View {
                             .frame(width: 8, height: 8)
 
                         if hasAnyConnection {
-                            ForEach(classicConnectionLines, id: \.self) { line in
-                                Text(line)
+                            ForEach(devices.classicConnections) { device in
+                                Text("经典: \(device.name)")
                                     .font(.callout)
                                     .foregroundColor(.primary)
                             }
@@ -125,7 +136,7 @@ struct BluetoothSettingsView: View {
 
     private func deviceRow(name: String, bleDevice: BLEDiscoveredDevice?) -> some View {
         let state = BluetoothDeviceConnectionState.resolve(
-            classicConnected: BLEConnectionPolicy.usesClassicConnection(name: name, connectedNames: Set(classicService.connectedClassicDeviceNames)),
+            classicConnected: bleDevice == nil,
             bleConnected: bleDevice?.isConnected == true,
             connecting: bleDevice.map { bleService.connectingDeviceIDs.contains($0.id) } ?? false)
         let selected = bleDevice.map { bleService.selectedDevices[$0.id] != nil } ?? false
@@ -153,7 +164,7 @@ struct BluetoothSettingsView: View {
                     }
                 }
                 if let device = bleDevice, selected || state == .bleConnected {
-                    Button(state == .classicConnected ? "忘记 BLE" : "忘记") { bleService.forgetDevice(device.id) }
+                    Button("忘记") { bleService.forgetDevice(device.id) }
                 }
             }
             if let message = state.statusMessage(diagnostic: diagnostic) {
@@ -232,28 +243,9 @@ struct BluetoothSettingsView: View {
 
     // MARK: - 连接状态汇总
 
-    private var visibleBLEDevices: [BLEDiscoveredDevice] {
-        var devices = bleService.discoveredDevices
-        for (id, name) in bleService.selectedDevices where !devices.contains(where: { $0.id == id }) {
-            devices.append(BLEDiscoveredDevice(id: id, name: name, rssi: 0, isConnected: false))
-        }
-        return devices.sorted { $0.name == $1.name ? $0.id.uuidString < $1.id.uuidString : $0.name < $1.name }
-    }
-
-    private var classicOnlyConnections: [String] {
-        classicService.connectedClassicDeviceNames.filter { name in
-            !visibleBLEDevices.contains { BLEConnectionPolicy.usesClassicConnection(name: $0.name, connectedNames: [name]) }
-        }
-    }
-
-    /// 经典已连接副屏的状态行（如 "经典: AgentRing-vivoX21A"）
-    private var classicConnectionLines: [String] {
-        classicService.connectedClassicDeviceNames.map { "经典: \($0)" }
-    }
-
     /// 任一通道（经典或 BLE）有已连接副屏
     private var hasAnyConnection: Bool {
-        !classicService.connectedClassicDeviceNames.isEmpty || bleService.connectedDeviceName != nil
+        !classicService.connectedClassicDevices.isEmpty || bleService.connectedDeviceName != nil
     }
 
     // MARK: - 手动推流方法

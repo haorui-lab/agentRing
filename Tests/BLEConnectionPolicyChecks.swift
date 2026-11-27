@@ -59,6 +59,47 @@ import Foundation
         for (failures, expected) in expectedBackoffs {
             check(BLEConnectionPolicy.classicReconnectCooldown(consecutiveFailures: failures) == expected, "Classic reconnect backoff for failure \(failures)")
         }
-        print("PASS: BLE selection, retries, handshake stages, security waits, classic/BLE row states, LCD downgrade and UTF-8 labels")
+        checkOvernightDiscovery()
+        print("PASS: BLE selection, retries, handshake stages, security waits, overnight discovery expiry, classic/BLE row states, LCD downgrade and UTF-8 labels")
+    }
+
+    private static func checkOvernightDiscovery() {
+        let phone = "AgentRing-NX513J"
+        let classic = ClassicDisplayConnection(id: "112233445566", name: phone)
+        let saved = UUID(), active = UUID(), lcd = UUID()
+        let start = Date(timeIntervalSince1970: 0)
+        var cache = BLEDiscoveryCache<Int>()
+        cache.record(0, id: saved, name: phone, rssi: -50, at: start)
+        cache.record(1, id: active, name: "AgentRing-LCD", rssi: -50, at: start)
+        // Model 8 hours of background scans with changing advertisement IDs.
+        var latest = saved
+        for scan in 1...1920 {
+            let now = start.addingTimeInterval(Double(scan * 15))
+            _ = cache.removeStale(before: now.addingTimeInterval(-BLEDiscoveryCache<Int>.lifetime), keeping: [active])
+            latest = UUID()
+            cache.record(scan, id: latest, name: phone.lowercased(), rssi: -60, at: now)
+            precondition(cache.rows.count <= 6, "Old identifiers must not accumulate across scans")
+        }
+        let rows = Array(cache.rows.values)
+        precondition(cache[saved] == nil && cache[active] != nil, "Expire inactive observations and retain an active peripheral")
+        let selection = [saved: phone, lcd: "AgentRing-LCD-2"]
+        let connected = BluetoothDeviceList(discovered: rows, selected: selection, classic: [classic])
+        precondition(connected.classicConnections == [classic], "One RFCOMM session must produce one connected row")
+        precondition(Set(connected.bleDevices.map(\.id)) == [lcd, active], "Same-name BLE advertisements must not duplicate the classic row")
+        precondition(connected.savedBLEUsingClassic.map(\.id) == [saved], "Only explicitly saved UUIDs offer Forget BLE")
+
+        let morning = start.addingTimeInterval(9 * 3600)
+        _ = cache.removeStale(before: morning.addingTimeInterval(-BLEDiscoveryCache<Int>.lifetime), keeping: [])
+        cache.record(2, id: latest, name: phone, rssi: -55, at: morning)
+        cache.record(2, id: latest, name: phone, rssi: -40, at: morning)
+        let disconnected = BluetoothDeviceList(discovered: Array(cache.rows.values), selected: selection, classic: [])
+        precondition(disconnected.classicConnections.isEmpty && disconnected.savedBLEUsingClassic.isEmpty)
+        precondition(Set(disconnected.bleDevices.map(\.id)) == [latest, saved, lcd], "Distinct same-name BLE devices stay independently selectable")
+        precondition(disconnected.bleDevices.first { $0.id == latest }?.rssi == -40)
+        precondition(disconnected.bleDevices.first { $0.id == saved }?.rssi == 0, "Offline selection survives discovery expiry")
+
+        let second = ClassicDisplayConnection(id: "665544332211", name: phone)
+        let both = BluetoothDeviceList(discovered: [], selected: [:], classic: [classic, second])
+        precondition(Set(both.classicConnections.map(\.id)) == [classic.id, second.id], "Two paired phones with the same name keep independent rows")
     }
 }
