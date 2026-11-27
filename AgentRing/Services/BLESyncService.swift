@@ -16,20 +16,6 @@ import OSLog
 import AppKit
 import Combine
 
-nonisolated public struct BLEDiscoveredDevice: Identifiable, Equatable {
-    public let id: UUID
-    public let name: String
-    public let rssi: Int
-    public var isConnected: Bool
-
-    public init(id: UUID, name: String, rssi: Int, isConnected: Bool) {
-        self.id = id
-        self.name = name
-        self.rssi = rssi
-        self.isConnected = isConnected
-    }
-}
-
 nonisolated final class BLESyncService: NSObject, ObservableObject, @unchecked Sendable {
     // CoreBluetooth/session state is confined to queue; published snapshots are
     // written on main. SDK delegates are explicitly nonisolated for that queue.
@@ -63,8 +49,7 @@ nonisolated final class BLESyncService: NSObject, ObservableObject, @unchecked S
     private var savedDevices: [UUID: String] = [:]
     private var requestedDevices: Set<UUID> = []
     private var suspendedDevices: Set<UUID> = []
-    private var peripherals: [UUID: CBPeripheral] = [:]
-    private var advertisedNames: [UUID: String] = [:]
+    private var discoveries = BLEDiscoveryCache<CBPeripheral>()
     private var cancellingDevices: Set<UUID> = []
     private static let selectionKey = "bleSelectedDevicesV2"
     private var hostName = "Mac"
@@ -142,7 +127,7 @@ nonisolated final class BLESyncService: NSObject, ObservableObject, @unchecked S
         isRunning && !isSuspendedForSystemState && !cancellingDevices.contains(id) && BLEConnectionPolicy.mayConnect(
             id: id, selected: Set(savedDevices.keys), requested: requestedDevices, suspended: suspendedDevices,
             classicConnected: BLEConnectionPolicy.usesClassicConnection(
-                name: advertisedNames[id] ?? savedDevices[id] ?? peripherals[id]?.name ?? "", connectedNames: classicDeviceNames))
+                name: discoveries[id]?.row.name ?? savedDevices[id] ?? "", connectedNames: classicDeviceNames))
     }
 
     private func message(_ text: String?, for id: UUID) {
@@ -158,8 +143,9 @@ nonisolated final class BLESyncService: NSObject, ObservableObject, @unchecked S
     func updateClassicConnections(_ names: [String]) {
         queue.async { [weak self] in
             guard let self else { return }
-            let previousNames = self.classicDeviceNames
-            self.classicDeviceNames = Set(names)
+            let connectedNames = Set(names)
+            guard connectedNames != self.classicDeviceNames else { return }
+            self.classicDeviceNames = connectedNames
             for session in Array(self.sessions.values) where BLEConnectionPolicy.usesClassicConnection(
                 name: session.deviceName, connectedNames: self.classicDeviceNames) {
                 let id = session.identifier
@@ -170,13 +156,9 @@ nonisolated final class BLESyncService: NSObject, ObservableObject, @unchecked S
                 self.cancellingDevices.insert(id)
                 self.centralManager?.cancelPeripheralConnection(session.peripheral)
             }
-            for (id, name) in self.advertisedNames {
-                if BLEConnectionPolicy.usesClassicConnection(name: name, connectedNames: self.classicDeviceNames) {
-                    self.requestedDevices.remove(id)
-                    self.message("已通过经典蓝牙连接，无需 BLE 配对。", for: id)
-                } else if BLEConnectionPolicy.usesClassicConnection(name: name, connectedNames: previousNames) {
-                    self.message(nil, for: id)
-                }
+            self.requestedDevices = self.requestedDevices.filter { id in
+                !BLEConnectionPolicy.usesClassicConnection(
+                    name: self.discoveries[id]?.row.name ?? self.savedDevices[id] ?? "", connectedNames: connectedNames)
             }
             self.publishConnections()
         }
@@ -185,17 +167,16 @@ nonisolated final class BLESyncService: NSObject, ObservableObject, @unchecked S
     func connectDevice(_ id: UUID) {
         let label = BLEConnectionPolicy.hostLabel(Host.current().localizedName ?? "Mac")
         queue.async { [weak self] in
-            guard let self, self.isRunning else { return }
+            guard let self, self.isRunning, self.discoveries[id] != nil || self.savedDevices[id] != nil else { return }
             self.hostName = label
-            let name = self.advertisedNames[id] ?? self.savedDevices[id] ?? self.peripherals[id]?.name ?? ""
+            let name = self.discoveries[id]?.row.name ?? self.savedDevices[id] ?? ""
             guard !BLEConnectionPolicy.usesClassicConnection(name: name, connectedNames: self.classicDeviceNames) else {
-                self.message("已通过经典蓝牙连接，无需 BLE 配对。", for: id)
                 return
             }
             self.requestedDevices.insert(id)
             self.suspendedDevices.remove(id)
             self.gattRejectCooldowns.removeValue(forKey: id)
-            if let peripheral = self.peripherals[id] { self.connect(peripheral) }
+            if let peripheral = self.discoveries[id]?.peripheral { self.connect(peripheral) }
             else { self.startScanning() }
         }
     }
@@ -222,7 +203,7 @@ nonisolated final class BLESyncService: NSObject, ObservableObject, @unchecked S
         let id = peripheral.identifier
         guard mayConnect(id), sessions[id] == nil else { return }
         if let rejectedAt = gattRejectCooldowns[id], Date().timeIntervalSince1970 - rejectedAt < Self.gattRejectCooldown { return }
-        sessions[id] = BLESession(peripheral: peripheral, name: advertisedNames[id] ?? savedDevices[id] ?? peripheral.name ?? "")
+        sessions[id] = BLESession(peripheral: peripheral, name: discoveries[id]?.row.name ?? savedDevices[id] ?? peripheral.name ?? "")
         peripheral.delegate = self
         message("正在连接…", for: id)
         publishConnections()
@@ -232,24 +213,34 @@ nonisolated final class BLESyncService: NSObject, ObservableObject, @unchecked S
 
     private func publishConnections() {
         let ready = sessions.values.filter(\.isReady)
-        let ids = Set(ready.map(\.identifier))
         let connectingIDs = Set(sessions.values.filter { !$0.isReady }.map(\.identifier))
         let names = ready.map(\.deviceName).sorted().joined(separator: ", ")
-        // Bonded peripherals may reconnect without advertising again. Keep their
-        // live session in the list instead of showing a disconnected saved row.
-        let connectedRows = ready.map {
-            BLEDiscoveredDevice(id: $0.identifier, name: $0.deviceName, rssi: 0, isConnected: true)
+        var rows = discoveries.rows
+        for session in ready {
+            // Bonded peripherals can reconnect without advertising again.
+            let id = session.identifier
+            rows[id] = BLEDiscoveredDevice(id: id, name: session.deviceName, rssi: rows[id]?.rssi ?? 0, isConnected: true)
         }
+        let snapshot = rows.values.sorted { $0.rssi == $1.rssi ? $0.id.uuidString < $1.id.uuidString : $0.rssi > $1.rssi }
         DispatchQueue.main.async {
-            self.connectedDeviceName = names.isEmpty ? nil : names
-            self.connectingDeviceIDs = connectingIDs
-            for index in self.discoveredDevices.indices {
-                self.discoveredDevices[index].isConnected = ids.contains(self.discoveredDevices[index].id)
-            }
-            for row in connectedRows where !self.discoveredDevices.contains(where: { $0.id == row.id }) {
-                self.discoveredDevices.append(row)
-            }
+            let name = names.isEmpty ? nil : names
+            if self.connectedDeviceName != name { self.connectedDeviceName = name }
+            if self.connectingDeviceIDs != connectingIDs { self.connectingDeviceIDs = connectingIDs }
+            if self.discoveredDevices != snapshot { self.discoveredDevices = snapshot }
         }
+    }
+
+    private func pruneDiscoveries(before cutoff: Date) {
+        let inUse = Set(sessions.keys).union(requestedDevices).union(cancellingDevices)
+        let removed = discoveries.removeStale(before: cutoff, keeping: inUse)
+        guard !removed.isEmpty else { return }
+        let unsaved = removed.subtracting(savedDevices.keys)
+        suspendedDevices.subtract(unsaved)
+        for id in unsaved { gattRejectCooldowns.removeValue(forKey: id) }
+        DispatchQueue.main.async {
+            self.deviceMessages = self.deviceMessages.filter { !unsaved.contains($0.key) }
+        }
+        publishConnections()
     }
 
     // MARK: - 控制接口
@@ -259,8 +250,8 @@ nonisolated final class BLESyncService: NSObject, ObservableObject, @unchecked S
             guard let self, self.isRunning else { return }
             self.isSuspendedForSystemState = false
             self.stopScanning()
+            self.pruneDiscoveries(before: .distantFuture)
             DispatchQueue.main.async {
-                self.discoveredDevices.removeAll(where: { !$0.isConnected })
                 BluetoothSyncService.shared.resetBackoffAndReconnect()
             }
             self.startScanning()
@@ -304,8 +295,10 @@ nonisolated final class BLESyncService: NSObject, ObservableObject, @unchecked S
                 self.centralManager?.cancelPeripheralConnection(session.peripheral)
             }
             self.sessions.removeAll()
-            self.publishConnections()
             self.requestedDevices.removeAll()
+            self.cancellingDevices.removeAll()
+            self.pruneDiscoveries(before: .distantFuture)
+            self.publishConnections()
             self.lastPayloadLine = nil
             DispatchQueue.main.async {
                 self.isScanning = false
@@ -447,12 +440,12 @@ nonisolated final class BLESyncService: NSObject, ObservableObject, @unchecked S
 
     private func startScanning(duration: TimeInterval = 6.0) {
         guard isRunning, !isSuspendedForSystemState, centralManager?.state == .poweredOn else { return }
+        pruneDiscoveries(before: Date().addingTimeInterval(-BLEDiscoveryCache<CBPeripheral>.lifetime))
         scanTimeoutWorkItem?.cancel()
         DispatchQueue.main.async { self.isScanning = true }
         Self.logger.info("扫描 BLE 副屏；未选择的设备仅展示")
         if let centralManager {
             for peripheral in centralManager.retrievePeripherals(withIdentifiers: Array(savedDevices.keys)) {
-                peripherals[peripheral.identifier] = peripheral
                 connect(peripheral)
             }
         }
@@ -581,20 +574,8 @@ extension BLESyncService: CBCentralManagerDelegate {
 
         let rssiVal = RSSI.intValue
         let uuid = peripheral.identifier
-        let isConnected = sessions[uuid]?.isReady == true
-        peripherals[uuid] = peripheral
-        advertisedNames[uuid] = name
-
-        DispatchQueue.main.async { [weak self] in
-            guard let self else { return }
-            // 同名设备保持独立；UUID 只用于本机选择，不作为认证凭据。
-            if let idx = self.discoveredDevices.firstIndex(where: { $0.id == uuid }) {
-                self.discoveredDevices[idx] = BLEDiscoveredDevice(id: uuid, name: name, rssi: rssiVal, isConnected: isConnected)
-            } else {
-                self.discoveredDevices.append(BLEDiscoveredDevice(id: uuid, name: name, rssi: rssiVal, isConnected: isConnected))
-                self.discoveredDevices.sort { $0.rssi > $1.rssi }
-            }
-        }
+        discoveries.record(peripheral, id: uuid, name: name, rssi: rssiVal, at: Date())
+        publishConnections()
 
         guard mayConnect(uuid) else { return }
 

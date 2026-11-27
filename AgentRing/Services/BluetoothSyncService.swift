@@ -20,8 +20,8 @@ import Combine
 final class BluetoothSyncService: NSObject, ObservableObject {
     static let shared = BluetoothSyncService()
 
-    /// 经典蓝牙已连接副屏名列表（主线程发布，供设置页展示）
-    @Published private(set) var connectedClassicDeviceNames: [String] = []
+    /// 经典蓝牙已连接副屏列表（主线程发布，供设置页展示）
+    @Published private(set) var connectedClassicDevices: [ClassicDisplayConnection] = []
 
     // MARK: - 协议常量
 
@@ -490,15 +490,16 @@ final class BluetoothSyncService: NSObject, ObservableObject {
         publishConnectedClassicDevices()
     }
 
-    /// 把当前 RFCOMM 已连接的副屏名列表发布到主线程（供设置页展示）
+    /// 把当前 RFCOMM 已连接的副屏列表发布到主线程（供设置页展示）
     private func publishConnectedClassicDevices() {
-        let names = sessions.values
+        let connected: [ClassicDisplayConnection] = sessions.values
             .filter { $0.isConnected }
-            .map { $0.deviceName }
-            .sorted()
+            .map { ClassicDisplayConnection(id: $0.address, name: $0.deviceName) }
+        let devices = connected.sorted { $0.name == $1.name ? $0.id < $1.id : $0.name < $1.name }
         DispatchQueue.main.async { [weak self] in
-            self?.connectedClassicDeviceNames = names
-            BLESyncService.shared.updateClassicConnections(names)
+            guard let self, self.connectedClassicDevices != devices else { return }
+            self.connectedClassicDevices = devices
+            BLESyncService.shared.updateClassicConnections(devices.map(\.name))
         }
     }
 
@@ -604,12 +605,7 @@ final class BluetoothSyncService: NSObject, ObservableObject {
 
     private func session(for channel: IOBluetoothRFCOMMChannel?) -> DisplaySession? {
         guard let channel else { return nil }
-        if let addr = channel.getDevice()?.addressString {
-            let normalized = Self.normalizeAddress(addr)
-            if let session = sessions[normalized] {
-                return session
-            }
-        }
+        // A delayed close from an old channel must not tear down its replacement.
         return sessions.values.first { $0.channel === channel }
     }
 }
